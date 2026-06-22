@@ -2,7 +2,7 @@
 
 - Confirm the repository contains no real logs, wallets, passwords, or generated `.codex` history databases.
 - Keep `config/connections.conf` ignored; publish only `config/connections.conf.example`.
-- Run `bash -n bin/*.sh`.
-- Run `bin/db-history-init.sh --schema-only`.
+- Choose and add a licence before public release.
+- Run `make test`.
 - Run a live smoke test against a disposable SQLcl saved connection.
-- Decide whether to add convenience helpers for script and commit searches before public release.
+- Confirm `git status --ignored --short` shows only expected ignored runtime files.

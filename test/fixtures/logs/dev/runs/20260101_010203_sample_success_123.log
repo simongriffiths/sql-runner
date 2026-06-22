@@ -1,0 +1,40 @@
+[INFO] START
+
+[INFO] RUN_ID=20260101_010203_sample_success_123
+[INFO] ENV=dev
+[INFO] CONNECTION=sample_dev
+[INFO] SCRIPT=examples/sample.sql
+[INFO] SCRIPT_PATH=/tmp/sql-runner/examples/sample.sql
+[INFO] SCRIPT_SHA256=abc
+[INFO] GIT_COMMIT=abc1234
+[INFO] GIT_DIRTY=false
+[INFO] LOG_LEVEL=normal
+[INFO] TIMESTAMP=20260101_010203
+[INFO] LOG_FILE=/tmp/sql-runner/logs/dev/runs/20260101_010203_sample_success_123.log
+
+[INTENT]
+Purpose: Fixture package deployment.
+Approach: Provide a stable log for offline history rebuild tests.
+Reason: Tests should not require a live Oracle Database.
+Expected objects:
+  SAMPLE_PACKAGE
+Risk: Low
+Prior history checked: Fixture only.
+[END INTENT]
+
+[ACTION]
+SQLcl: Release 26.1 Production
+Connected to:
+Oracle Database
+
+Package SAMPLE_PACKAGE compiled
+
+[INFO] USER_ERRORS_CHECK
+
+0 rows selected.
+[OUTCOME]
+STATUS=SUCCESS
+SQLCL_EXIT=0
+
+[INFO] SQLCL_EXIT=0
+[INFO] END

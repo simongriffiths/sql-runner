@@ -210,10 +210,10 @@ fi
 # In debug mode mirror SQLcl output to the console; otherwise log only.
 if [[ "${LOG_LEVEL}" = "debug" ]]; then
   ECHO_SETTING="set echo on"
-  TEE_STDOUT="/dev/fd/1"
+  TEE_ARGS=("-a" "${LOG_FILE}")
 else
   ECHO_SETTING="set echo off"
-  TEE_STDOUT="/dev/null"
+  TEE_ARGS=("-a" "${LOG_FILE}")
 fi
 
 # Write a stable log header before invoking SQLcl.
@@ -249,7 +249,8 @@ echo "[INFO] LOG_LEVEL=${LOG_LEVEL}"
 
 # Run the target script inside a controlled SQLcl session and capture all output.
 set +e
-"${SQLCL_BIN}" -name "${CONNECTION}" 2>&1 <<EOF | tee -a "${LOG_FILE}" >"${TEE_STDOUT}"
+if [[ "${LOG_LEVEL}" = "debug" ]]; then
+  "${SQLCL_BIN}" -name "${CONNECTION}" 2>&1 <<EOF | tee "${TEE_ARGS[@]}"
 whenever oserror exit failure rollback
 whenever sqlerror exit sql.sqlcode rollback
 set feedback on
@@ -273,7 +274,34 @@ order by
     sequence;
 exit success
 EOF
-SQLCL_EXIT=$?
+  SQLCL_EXIT=$?
+else
+  "${SQLCL_BIN}" -name "${CONNECTION}" 2>&1 <<EOF | tee "${TEE_ARGS[@]}" >/dev/null
+whenever oserror exit failure rollback
+whenever sqlerror exit sql.sqlcode rollback
+set feedback on
+set timing on
+set serveroutput on size unlimited
+set define off
+set sqlblanklines on
+${ECHO_SETTING}
+@${SCRIPT_PATH}
+prompt [INFO] USER_ERRORS_CHECK
+select
+    name,
+    type,
+    line,
+    position,
+    text
+from user_errors
+order by
+    name,
+    type,
+    sequence;
+exit success
+EOF
+  SQLCL_EXIT=$?
+fi
 set -e
 
 # Treat known SQLcl connection failures as hard failures even if SQLcl returns zero.
