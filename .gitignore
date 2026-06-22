@@ -1,0 +1,4 @@
+.DS_Store
+.codex/
+logs/
+config/connections.conf

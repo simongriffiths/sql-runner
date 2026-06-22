@@ -1,0 +1,12 @@
+# Map logical environment names to saved SQLcl connection names.
+# Create saved SQLcl connections with SQLcl, then copy this file to:
+#   config/connections.conf
+#
+# Example:
+#   sql /nolog
+#   conn -save dev_user/password@example_high -name dev
+
+admin=admin
+dev=dev
+test=test
+prod=prod
