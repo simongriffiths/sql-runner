@@ -3,9 +3,9 @@
 test: lint smoke-history
 
 lint:
-	bash -n bin/*.sh test/*.sh
+	bash -n bin/*.sh test/*.sh skills/sql-runner/scripts/*.sh
 	@if command -v shellcheck >/dev/null 2>&1; then \
-		shellcheck bin/*.sh test/*.sh; \
+		shellcheck bin/*.sh test/*.sh skills/sql-runner/scripts/*.sh; \
 	else \
 		echo "[WARN] shellcheck not found; skipped shell lint"; \
 	fi
