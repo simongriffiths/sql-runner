@@ -23,6 +23,23 @@ The installer copies:
 
 It does not overwrite `config/connections.conf`.
 
+## Project-Local Execution
+
+Always run the target project's local copy:
+
+```bash
+cd /path/to/target-project
+bin/run-sql.sh --env dev --script path/to/script.sql
+```
+
+Do not run another project's SQL through `/Users/simon/Oracle/sql-runner/bin/run-sql.sh` or any other central checkout. The runner derives its log and history root from the location of `bin/run-sql.sh`, so central execution writes logs into the central source repository.
+
+The source repository guard blocks non-example SQL scripts by default. Override only for intentional source-repo maintenance:
+
+```bash
+SQL_RUNNER_ALLOW_SOURCE_REPO_RUN=yes bin/run-sql.sh --env dev --script path/to/script.sql
+```
+
 ## Configuration
 
 `config/connections.conf` maps logical environments to saved SQLcl connections:

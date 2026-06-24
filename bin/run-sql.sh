@@ -128,6 +128,30 @@ else
   SCRIPT_PATH="${PROJECT_ROOT}/${SCRIPT_ARG}"
 fi
 
+is_sql_runner_source_repo() {
+  [[ -f "${PROJECT_ROOT}/skills/sql-runner/SKILL.md" ]] || return 1
+  git -C "${PROJECT_ROOT}" remote get-url origin 2>/dev/null |
+    grep -Eq '(^|[:/])simongriffiths/sql-runner(\.git)?$'
+}
+
+is_source_repo_example_script() {
+  case "${SCRIPT_PATH}" in
+    "${PROJECT_ROOT}/examples/"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+if is_sql_runner_source_repo && ! is_source_repo_example_script && [[ "${SQL_RUNNER_ALLOW_SOURCE_REPO_RUN:-}" != "yes" ]]; then
+  echo "[ERROR] Refusing to run project SQL from the sql-runner source repository" >&2
+  echo "[ERROR] Install sql-runner into the target project and run that project's bin/run-sql.sh" >&2
+  echo "[ERROR] Override only for intentional source-repo maintenance with SQL_RUNNER_ALLOW_SOURCE_REPO_RUN=yes" >&2
+  exit 2
+fi
+
 # Fail before execution if the target script or SQLcl binary is missing.
 if [[ ! -f "${SCRIPT_PATH}" ]]; then
   echo "[ERROR] SQL script not found: ${SCRIPT_ARG}" >&2

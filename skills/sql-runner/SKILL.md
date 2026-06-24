@@ -9,9 +9,10 @@ Use this skill for Oracle Database project work that should run SQL through the 
 
 ## Core Rule
 
-Do not run project SQL directly with `sql` when `bin/run-sql.sh` is available. Use:
+Do not run project SQL directly with `sql` when `bin/run-sql.sh` is available. Do not run another project's SQL with the central `sql-runner` checkout. Install or update `sql-runner` into the target project, change to that project root, then use the project-local runner:
 
 ```bash
+cd <project-root>
 bin/run-sql.sh --env <env> --script <file.sql>
 ```
 
@@ -33,21 +34,22 @@ After install, ask the user to configure `config/connections.conf` unless it alr
 
 ## Required Workflow For SQL Work
 
-1. Confirm `bin/run-sql.sh` exists at the project root.
-2. Confirm `config/connections.conf` exists, or identify the intended `SQL_RUNNER_CONFIG`.
-3. Before changing or running SQL, search prior history when a history DB exists:
+1. Confirm you are in the target project root, not the central `sql-runner` source repository.
+2. Confirm `bin/run-sql.sh` exists at the project root.
+3. Confirm `config/connections.conf` exists, or identify the intended `SQL_RUNNER_CONFIG`.
+4. Before changing or running SQL, search prior history when a history DB exists:
    - `bin/db-history-similar.sh "<task description>"`
    - `bin/db-history-script.sh <object-or-script-term>`
    - `bin/db-history-failures.sh <term>`
-4. Ensure the SQL script has an `INTENT` block near the top.
-5. Run SQL only through `bin/run-sql.sh --env <env> --script <file.sql>`.
-6. For production, require explicit user confirmation and `ALLOW_PROD_SQL=yes`.
-7. After execution, review:
+5. Ensure the SQL script has an `INTENT` block near the top.
+6. Run SQL only through the target project's `bin/run-sql.sh --env <env> --script <file.sql>`.
+7. For production, require explicit user confirmation and `ALLOW_PROD_SQL=yes`.
+8. After execution, review:
    - console status
    - log file path
    - `USER_ERRORS` section
    - SQLite history record when available
-8. Do not repeat a previously failed approach unless the new attempt explains why it differs.
+9. Do not repeat a previously failed approach unless the new attempt explains why it differs.
 
 ## INTENT Block
 

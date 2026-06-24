@@ -52,4 +52,47 @@ set -e
 [[ "${MISSING_ENV_EXIT}" = "2" ]]
 grep -q 'Unknown environment: missing' /tmp/sql-runner-missing-env.out
 
+CONFIG_FILE="${WORK_DIR}/source-repo-connections.conf"
+printf 'dev = saved_dev\n' >"${CONFIG_FILE}"
+FAKE_SQLCL="${WORK_DIR}/fake-sqlcl.sh"
+cat >"${FAKE_SQLCL}" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+echo "SQLcl fake"
+exit 0
+SH
+chmod +x "${FAKE_SQLCL}"
+NON_EXAMPLE_SQL="${WORK_DIR}/non-example.sql"
+cat >"${NON_EXAMPLE_SQL}" <<'SQL'
+-- INTENT:
+-- Purpose: Exercise source-repo guard.
+-- Approach: Use an absolute path outside examples.
+-- Reason: Project SQL should not write logs into the central source repo.
+-- Expected objects:
+--   None
+-- Risk: Low
+-- Prior history checked: Test fixture.
+-- END INTENT
+
+select 1 from dual;
+SQL
+
+set +e
+SQL_RUNNER_CONFIG="${CONFIG_FILE}" \
+  SQLCL_BIN=/bin/false \
+  "${PROJECT_ROOT}/bin/run-sql.sh" --env dev --script "${NON_EXAMPLE_SQL}" >/tmp/sql-runner-source-guard.out 2>&1
+SOURCE_GUARD_EXIT=$?
+set -e
+[[ "${SOURCE_GUARD_EXIT}" = "2" ]]
+grep -q 'Refusing to run project SQL from the sql-runner source repository' /tmp/sql-runner-source-guard.out
+
+set +e
+SQL_RUNNER_CONFIG="${CONFIG_FILE}" \
+  SQLCL_BIN="${FAKE_SQLCL}" \
+  "${PROJECT_ROOT}/bin/run-sql.sh" --env dev --script examples/verify-connection.sql >/tmp/sql-runner-example-allowed.out 2>&1
+EXAMPLE_ALLOWED_EXIT=$?
+set -e
+[[ "${EXAMPLE_ALLOWED_EXIT}" = "0" ]]
+grep -q 'SQLCL_EXIT=0' /tmp/sql-runner-example-allowed.out
+
 echo "[INFO] Offline tests passed"
