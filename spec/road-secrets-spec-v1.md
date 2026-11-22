@@ -1,7 +1,7 @@
 # road-secrets Specification
 
-**Version:** 1.0 (draft)
-**Date:** 2026-11-21
+**Version:** 1.1 (draft)
+**Date:** 2026-11-22
 **Repository:** `sql-runner`
 **Status:** Ready for build, subject to the spikes in Section 12
 
@@ -31,9 +31,11 @@ The Keychain is the master copy. SQLcl's saved connections are a copy that the t
 - Unattended use by Claude Code running in the Claude desktop app on the same Mac
 - Database users reached through SQLcl saved connections
 - road-kit principals set through `bin/set-principal-password.sh`
+- Several databases, each reached through its own wallet and TNS name
 
 ### 2.2 Out of scope
 
+- **The ADMIN user of any database.** The tool refuses any key whose `NAME` is `ADMIN`. ADMIN passwords are managed by hand and never stored where Claude Code can read them (Section 3, item 6).
 - **Production.** The tool refuses to create any entry whose environment is `prod`. Production passwords are never stored.
 - iCloud sync, or sync of any other kind
 - Export and import
@@ -52,6 +54,7 @@ These facts shaped the design. Do not change the design without revisiting them.
 3. **Passwords must never appear on a command line.** Command-line arguments are visible through `ps` and land in shell history. This rule already governs `run-sql.sh` and `set-principal-password.sh`. It is why the tool is a compiled Swift binary that calls the Keychain API directly, and why it never shells out to `security add-generic-password -w`.
 4. **Passwords must never reach a log.** `run-sql.sh` logs live under `logs/` and are tracked in git. The tool never runs password-bearing SQL through `run-sql.sh`. It drives SQLcl itself, with echo off, and scrubs SQLcl's output before showing it.
 5. **The binary's identity must be stable.** Each Keychain entry carries an access list naming the programs that can read it without a prompt. macOS identifies a program by its path and code signature. The binary therefore lives at one fixed per-user path, outside every repository.
+6. **Claude Code must never hold ADMIN.** A stored ADMIN password would give an unattended agent unrestricted control of a database. The tool never stores one. It asks for the ADMIN password at the terminal only when an administrator change is needed. It refuses to ask when no terminal is attached.
 
 ---
 
@@ -63,7 +66,7 @@ These facts shaped the design. Do not change the design without revisiting them.
 | Installer | `sql-runner/bin/install-road-secrets.sh` |
 | Installed binary | `~/.local/bin/road-secrets` |
 | Dedicated keychain | `~/Library/Keychains/road.keychain-db` |
-| Per-user config | `~/.config/road-secrets/endpoints.conf` |
+| Word lists | `sql-runner/tools/road-secrets/Resources/adjectives.txt` and `nouns.txt` |
 | This spec | `sql-runner/spec/road-secrets-spec-v1.md` |
 
 The project installer (`skills/sql-runner/scripts/install-sql-runner.sh`) must not copy `road-secrets` into target projects. It checks whether `~/.local/bin/road-secrets` exists. If it is missing, it prints a one-line pointer to `bin/install-road-secrets.sh` and carries on.
@@ -85,7 +88,7 @@ road/<app>/<env>/<kind>/<NAME>
 | `app` | Lowercase letters, digits and hyphens. The app's repository name. | `road-cal` |
 | `env` | Lowercase letters, digits and hyphens. Must not be `prod`. | `dev` |
 | `kind` | `db` or `principal` | `principal` |
-| `NAME` | The database user name or principal subject. Uppercase letters, digits and `_ . @ $ # -`. Input is converted to uppercase. | `ALICE` |
+| `NAME` | The database user name or principal subject. Uppercase letters, digits and `_ . @ $ # -`. Input is converted to uppercase. Must not be `ADMIN`. | `ALICE` |
 
 Examples:
 
@@ -110,11 +113,27 @@ Each key is stored as one generic-password item:
 
 Each entry carries a small JSON document:
 
+For a `db` entry:
+
 ```json
-{ "set_at": "2026-11-21T23:59:00Z", "sqlcl_connection": "dev" }
+{ "set_at": "2026-11-22T00:20:00Z", "sqlcl_connection": "roadcal_dev",
+  "wallet": "/Users/simon/wallets/roadcal-dev", "tns": "roadcaldev_high" }
 ```
 
-`sqlcl_connection` is present only for `db` entries. It records which SQLcl saved connection the entry belongs to.
+For a `principal` entry:
+
+```json
+{ "set_at": "2026-11-22T00:20:00Z", "ords_url": "https://example.adb.uk-london-1.oraclecloudapps.com/ords" }
+```
+
+| Field | Meaning |
+|---|---|
+| `sqlcl_connection` | The SQLcl saved connection the entry belongs to |
+| `wallet` | The wallet directory for that database. The tool sets `TNS_ADMIN` to this path for every SQLcl process it starts. |
+| `tns` | The TNS name (the alias in the wallet's `tnsnames.ora`) |
+| `ords_url` | The ORDS base URL for the app and environment |
+
+All of these are supplied the first time a key is set and reused afterwards. Several databases are therefore supported with no shared configuration file.
 
 ### 5.4 Previous values
 
@@ -128,11 +147,33 @@ The previous item is deleted once the change succeeds. `list` hides previous ite
 
 ## 6. Password generation
 
-- 24 characters drawn from `A–Z`, `a–z` and `0–9`, using the system's secure random generator (`SecRandomCopyBytes`)
-- At least one uppercase letter, one lowercase letter and one digit
-- Must not contain the user name or subject, case-insensitively. Regenerate if it does.
+### 6.1 Format
 
-This satisfies Autonomous Database's rules: 12 to 30 characters, at least one uppercase letter, one lowercase letter and one digit, no double quotes, and not containing the user name. Using letters and digits only means no password ever needs quoting or escaping in SQLcl, JSON or shell.
+```
+Adjective.Noun.nnn
+```
+
+For example, `Brave.Otter.042`.
+
+- `Adjective` and `Noun` are chosen at random from the word lists, using the system's secure random generator (`SecRandomCopyBytes`). Each word starts with a capital letter and continues in lowercase.
+- `nnn` is a random integer from 0 to 999, always written as three digits with leading zeros.
+- If the password contains the user name or subject (ignoring case), generate another.
+
+### 6.2 Word lists
+
+- Two plain-text files, one word per line: about 1,000 adjectives and about 2,000 nouns.
+- Common, everyday words of 4 to 8 letters, using letters only. Words that are offensive, easily misspelt or have more than one common spelling are excluded.
+- The lists are part of the source and are reviewed by a person before the first release.
+
+### 6.3 Why this format passes
+
+Autonomous Database requires 12 to 30 characters, at least one uppercase letter, one lowercase letter and one digit, no double quotes, and no user name. With words of 4 to 8 letters, every password is 13 to 21 characters long. The capital letters, lowercase letters and digits are always present.
+
+The dots must be checked in spike S2. Oracle requires a password containing characters other than letters, digits, `_`, `$` and `#` to be double-quoted in SQL. The tool always quotes passwords in `alter user`. S2 must confirm that SQLcl's `conn` and `-savepwd` accept a password containing dots.
+
+### 6.4 Strength
+
+With the list sizes above there are about 2 billion possible passwords, or about 31 bits of randomness. This is a deliberate trade for typing convenience. It is acceptable because every managed password is for dev or test and every account has least privilege. Do not reuse this generator for anything else.
 
 ---
 
@@ -176,17 +217,17 @@ The fields are key, date set and label, separated by tabs. A prefix narrows the 
 
 Options:
 
-- `--connection <name>`: the SQLcl saved connection. Required the first time a key is set. On later runs it is taken from the entry's metadata.
-- `--via-admin <name>`: change the password through an administrator connection (see step 4).
+- `--connection <name>`, `--wallet <path>` and `--tns <name>`: the SQLcl saved connection, wallet directory and TNS name. All three are required the first time a key is set. On later runs they are taken from the entry's metadata.
+- `--via-admin`: change the password as ADMIN on the same database (see step 4). The ADMIN password is typed at the terminal and never stored.
 
 Steps:
 
-1. **Resolve the connection.** Use `--connection`, or else the entry's metadata. If neither exists, exit 2 with a message asking for `--connection`.
-2. **Read the connection details.** Run `connmgr show <name>` in SQLcl and parse the user name and connect string. If the user name does not match the key's `NAME`, exit 2. If `--via-admin` is absent and no current entry exists, exit 2. The account has not been adopted yet. The message should suggest `--via-admin`.
+1. **Resolve the connection.** Use the options, or else the entry's metadata. If neither exists, exit 2 with a message listing the missing options. Check that the wallet directory exists and that its `tnsnames.ora` contains the TNS name.
+2. **Read the connection details.** Run `connmgr show <name>` in SQLcl and parse the user name and connect string. If the user name does not match the key's `NAME`, exit 2. If `--via-admin` is absent and no current entry exists, exit 2. The account has not been adopted yet. The message should suggest `--via-admin`. If `--via-admin` is given and standard input is not a terminal, exit 6.
 3. **Store the new value first.** Generate a password. Copy the current entry (if any) to the previous item. Write the new password to the current entry.
 4. **Change the password in the database.** Drive SQLcl through standard input, with echo off:
    - **Default (self-change):** connect with `conn -name <connection>`, then run `alter user <NAME> identified by "<new>" replace "<old>";`. The old password comes from the previous item.
-   - **With `--via-admin <name>`:** connect with `conn -name <admin connection>`, then run `alter user <NAME> identified by "<new>";`. This is how an account whose password has been forgotten is adopted. It works because the administrator does not need the old password.
+   - **With `--via-admin`:** ask for the ADMIN password at the terminal with echo off. Connect as ADMIN to the entry's TNS name, with `TNS_ADMIN` set to the entry's wallet. Then run `alter user <NAME> identified by "<new>";`. Clear the ADMIN password from memory as soon as SQLcl has read it. This is how an account whose password has been forgotten is adopted. It works because ADMIN does not need the old password. It cannot run unattended, because an unattended agent has no terminal and does not know the ADMIN password.
 5. **On failure:** restore the current entry from the previous item, or delete it if there was none. Show the scrubbed SQLcl error and exit 5.
 6. **Re-save the SQLcl connection** with the new password, keeping every other property. The method is decided by spike S2 (Section 12). On failure, keep the Keychain entry, because the database already has the new password. Tell the user to run `sync` and exit 5.
 7. **Finish.** Delete the previous item, update the metadata and print a one-line success message. Never print the password.
@@ -196,6 +237,7 @@ Steps:
 Options:
 
 - `--project <path>`: the app's project root. It defaults to the root of the git repository containing the current directory.
+- `--ords-url <url>`: the ORDS base URL for the app and environment. Optional. If given, it is stored in the metadata and used by `check`.
 
 Steps:
 
@@ -223,18 +265,18 @@ Puts the password on the clipboard using `NSPasteboard`. Prints `copied <key>` t
 
 **For `db` keys,** it runs two checks and reports each one:
 
-1. Connect through SQLcl using the Keychain password and the connect string from `connmgr show`, then run `select 1 from dual`. This proves the Keychain copy works.
+1. Connect through SQLcl as `<NAME>` to the entry's TNS name, using the Keychain password and the entry's wallet. Then run `select 1 from dual`. This proves the Keychain copy works.
 2. Run `connmgr test <name>`. This proves SQLcl's copy works.
 
 **For `principal` keys,** it calls the scaffold login endpoint:
 
 - URL: `<ORDS base>/<API_BASE_PATH>/jwt-auth/login`
-- `<ORDS base>` comes from `~/.config/road-secrets/endpoints.conf`, a file of lines in the form `<app>/<env>=<url>`
+- `<ORDS base>` comes from the entry's `ords_url` metadata
 - `API_BASE_PATH` comes from the project's `road.config`
 - Method `POST`, content type `application/json`, with a body carrying the subject and password. Read `jwt_scaffold_auth_api.authenticate_json` in road-kit to confirm the field names.
 - Use `URLSession`. The password then never appears in an argument list.
 
-A 200 response containing `access_token` passes. A 404 means the scaffold login is not deployed. That happens when the app is configured for external OIDC (an outside identity provider such as Auth0). Report that and exit 5. If the endpoint is not configured, report "skipped: no endpoint for <app>/<env>" and exit 0.
+A 200 response containing `access_token` passes. A 404 means the scaffold login is not deployed. That happens when the app is configured for external OIDC (an outside identity provider such as Auth0). Report that and exit 5. If the entry has no `ords_url`, report "skipped: no ORDS URL stored for this key" and exit 0.
 
 ### 7.9 `delete <key> [--yes]`
 
@@ -258,7 +300,8 @@ Removes the entry and any previous item. Asks for confirmation unless `--yes` is
 - Run SQLcl as a child process using `Process`. Write commands to its standard input. Never put a password in its argument list.
 - The first lines written are `set echo off`, `set feedback off` and `set define off`.
 - Capture standard output and standard error together. Before showing any output, replace every occurrence of the old or new password with `********`.
-- Use `$SQLCL_BIN` if it is set. Otherwise use `sql` from `PATH`. Pass the environment through unchanged. `TNS_ADMIN` and wallet settings then still apply.
+- Use `$SQLCL_BIN` if it is set. Otherwise use `sql` from `PATH`. Pass the environment through. Set `TNS_ADMIN` to the entry's wallet directory.
+- Replace every occurrence of the ADMIN password in output with `********` as well.
 - Treat any `ORA-` or `SP2-` line, or a non-zero exit, as failure. This matches the run-sql spec. That spec counts SQLcl session errors as failures even when the exit code is 0.
 
 ---
@@ -320,8 +363,10 @@ Several of the APIs involved, such as `SecKeychainCreate` and `SecAccessCreate`,
 
 **S2. Re-saving a SQLcl connection.** Find a reliable way to replace the stored password of an existing saved connection while keeping its other properties, including any wallet or cloud configuration. Candidates:
 
-- `conn -save <name> -savepwd -replace <user>/<pwd>@<connect string>`, using the connect string from `connmgr show`
-- The same, with `-cloudconfig <wallet>` when the connection uses one
+- With `TNS_ADMIN` set to the entry's wallet: `conn -save <name> -savepwd -replace <user>/"<pwd>"@<tns>`
+- The same, using `-cloudconfig` if a wallet zip proves more reliable than a wallet directory
+
+Confirm that a password containing dots works, quoted and unquoted.
 
 Verify with `connmgr test`. Confirm that the password never appears in SQLcl's output or history.
 
@@ -331,18 +376,19 @@ Verify with `connmgr test`. Confirm that the password never appears in SQLcl's o
 
 ## 13. Tests
 
-- **Unit tests (`swift test`):** key parsing and validation, uppercase conversion, the `prod` refusal, Keychain attribute mapping, password generation rules (run 10,000 generations), output scrubbing and parsing of `endpoints.conf`.
+- **Unit tests (`swift test`):** key parsing and validation, uppercase conversion, the `prod` and `ADMIN` refusals, Keychain attribute mapping, password generation (run 10,000 generations and check length, character classes, the three-digit number and the user-name rule), word-list validation (letters only, 4 to 8 letters, no duplicates) and output scrubbing.
 - **Integration checklist (manual, recorded in `docs/journal/`):**
   1. `init` on a clean machine, then a second `init` reports that the keychain exists.
-  2. `set --via-admin` adopts a dev database user, then `check` passes both checks.
+  2. `set --via-admin` adopts a dev database user on one database, and a second user on a different database. `check` passes both checks for each.
   3. A second `set` (self-change) rotates the password, then `check` passes.
-  4. `set` with a deliberately wrong admin connection fails, and the Keychain entry is restored.
+  4. `set --via-admin` with a deliberately wrong ADMIN password fails, and the Keychain entry is restored.
   5. `sync` after deleting and recreating the SQLcl connection restores it.
-  6. `set` for a principal in road-kit, then `check` passes against the dev ORDS endpoint.
+  6. `set --ords-url` for a principal in road-kit, then `check` passes against the dev ORDS endpoint.
   7. `get` from a script in a Claude Code session runs with no prompt.
   8. `list`, `copy` and `delete` behave as specified.
-  9. `set` for any key with environment `prod` exits 6.
-  10. `ps` during `set` shows no password in any argument list.
+  9. `set` for any key with environment `prod` exits 6. `set` for any key with `NAME` `ADMIN` exits 6.
+  10. `set --via-admin` with standard input redirected from a file exits 6.
+  11. `ps` during `set` shows no password in any argument list.
 
 ---
 
@@ -360,8 +406,10 @@ Verify with `connmgr test`. Confirm that the password never appears in SQLcl's o
 
 ---
 
-## 15. Open questions
+## 15. Operating notes
 
-1. **Do dev and test share one database?** `connections.conf.example` has a single `admin` entry. If each environment has its own database, `--via-admin` must name the right administrator connection for each one. The default is that the user passes it explicitly.
-2. **ORDS base URLs.** These are not in any repository today. The user must fill in `endpoints.conf` before principal checks can run.
-3. **The ADMIN user itself.** The tool can store and rotate ADMIN's password by self-change once it is adopted. Adoption needs the current ADMIN password. If that has been forgotten, it must first be reset in the OCI console. Decide whether to support ADMIN in v1 or leave it out.
+These are not part of the build. They are conditions for the ADMIN rule in Section 3 to hold.
+
+1. **No SQLcl connection may store an ADMIN password.** Any existing ADMIN saved connection must be re-saved without its password (`-nopwd`). Otherwise Claude Code can already connect as ADMIN through SQLcl.
+2. **Privileged scripts need the user present.** Scripts that run as ADMIN through sql-runner's `admin` environment, such as creating schemas or granting privileges, will now prompt for the password. They cannot run unattended.
+3. **The OCI command-line tool is a second route to ADMIN.** If it is configured on the Mac mini with rights to update Autonomous Databases, Claude Code could reset the ADMIN password with it. Limit that OCI profile's policy, or keep the OCI configuration off the machine.
