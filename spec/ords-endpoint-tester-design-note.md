@@ -25,7 +25,7 @@ Claude edits a handler. The user tests it in the pane without leaving Claude Cod
 3. **Call the endpoint.** Choose a method, path parameters, query string and JSON body. Show the status, headers, time taken and response body.
 4. **Inspect the token.**
    - Decode the header and claims: issuer (`iss`), subject (`sub`), audience (`aud`), scope, key ID (`kid`), and issued-at (`iat`), not-before (`nbf`) and expiry (`exp`) times. Show a countdown to expiry.
-   - Check the signature against the issuer's published keys. For the road-kit scaffold these are at `<API_BASE_PATH>/jwt-auth/.well-known/jwks.json`. Mods have the browser's `crypto.subtle` API, so an RS256 signature check needs no extra library.
+   - Check the signature against the issuer's published keys. For the road-kit scaffold these are at `<API_BASE_PATH>/jwt-auth/.well-known/jwks.json`. Mods have the browser's `crypto.subtle` API. An RS256 signature check therefore needs no extra library.
 5. **Explain a 401 or 403.** Compare the token with the schema's JWT profile and the handler's privilege. Show one pass or fail line for each check:
 
    | Check | Rule |
@@ -54,14 +54,14 @@ Claude edits a handler. The user tests it in the pane without leaving Claude Cod
 - Tokens are secrets. The pane keeps them in memory only. It shows them masked, with a button to reveal or copy.
 - Tokens and passwords never go into the transcript, the log or `$.store`.
 - An "Ask Claude" button may send the decoded claims, the check results and the response status. It never sends the token, its signature or any password.
-- The pane refuses to fetch a production URL. It works only against environments road-secrets manages, which are dev and test.
+- The pane refuses to fetch a production URL. It works only against environments road-secrets manages. Those are dev and test.
 
 ---
 
 ## 5. Open questions
 
 1. Is the OpenAPI catalogue complete enough to drive the endpoint list, or does the tester need the database views as well?
-2. Should requests be saved as a named collection per app, like a lightweight Postman? This is useful, but it could also be left out of v1.
+2. Should requests be saved as a named collection per app, like a lightweight Postman? This would be useful. It could also be left out of v1.
 3. Should a run of saved requests become a smoke test, with a pass or fail result in the pane? This would overlap with road-kit's own tests.
 4. How should the tester handle Deep Data Security once road-kit adopts it? The token may then carry data roles as well as scopes.
 
