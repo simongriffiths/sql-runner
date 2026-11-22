@@ -1,9 +1,10 @@
 # Run-History Pane Specification
 
-**Version:** 1.0 (draft)
+**Version:** 1.1 (draft)
 **Date:** 2026-11-22
 **Repository:** `sql-runner`
 **Status:** Ready for build, subject to the spikes in Section 11
+**Depends on:** `spec/run-sql-failure-detection-spec-v1.md` (branch `spec/run-sql-failure-detection`). Build that first.
 
 ---
 
@@ -22,7 +23,7 @@ The pane is read-only. It never connects to a database, never needs a password a
 ### 2.1 In scope
 
 - A pane listing recent runs for the current project, with filters for environment and status
-- A detail view for one run, showing its intent, key errors and compile errors, with the full log on request
+- A detail view for one run, showing its intent, key errors, compile failures and where a stopped script failed, with the full log on request
 - Automatic refresh when Claude runs `run-sql.sh`
 - The Code tab of the Claude desktop app and the Claude Code CLI, on macOS
 
@@ -122,8 +123,15 @@ A log has these sections, in this order:
 [END INTENT]
 [ACTION]
 ...SQLcl output...
+[INFO] SCRIPT_COMPLETE      (absent if the script stopped early)
 [INFO] USER_ERRORS_CHECK
 ...rows from USER_ERRORS, or "no rows selected"...
+[COMPILE_FAILURES]          (only if any)
+...one line per object, then its error lines...
+[END COMPILE_FAILURES]
+[ERROR] COMPILE_FAILURES=<n>
+[ERROR] SCRIPT_INCOMPLETE: ...   (only if the script stopped early)
+[ERROR] FAILED_AT=<file>:<line>  (only if known)
 [OUTCOME]
 STATUS=SUCCESS|FAILURE
 SQLCL_EXIT=<n>
@@ -138,16 +146,17 @@ The parser in `lib/log.ts` returns:
 | `intent` | The lines between `[INTENT]` and `[END INTENT]` |
 | `purpose` | The text after `Purpose:` in the intent, or the first intent line if there is no `Purpose:` |
 | `keyErrors` | Lines in the action section starting with `ORA-`, `PLS-`, `SP2-` or `Unknown connection`. These are the same patterns `run-sql.sh` uses for its summary. Keep the first 10. |
-| `userErrors` | The lines after `[INFO] USER_ERRORS_CHECK` and before `[OUTCOME]`, with blank lines removed. Empty if the section says `no rows selected` or is absent. |
+| `compileFailures` | The objects and error lines between `[COMPILE_FAILURES]` and `[END COMPILE_FAILURES]`. Empty if the section is absent. |
+| `incomplete`, `failedAt` | `true` when `[ERROR] SCRIPT_INCOMPLETE` is present, and the value of `FAILED_AT` if there is one |
+| `userErrors` | The lines after `[INFO] USER_ERRORS_CHECK` and before the next section, with blank lines removed. Empty if the section says `no rows selected` or is absent. |
 | `status`, `exitCode` | From `STATUS=` and `SQLCL_EXIT=` in the outcome section |
 | `complete` | `true` when `[INFO] END` is present |
 
-Two facts about `userErrors` must be shown accurately in the pane:
+The pane shows `compileFailures` as the run's compile errors. These are the objects this run failed to compile, as found by `run-sql.sh`.
 
-- **The USER_ERRORS check does not run after a SQL error.** `whenever sqlerror exit` stops the session before it. A failed run therefore usually has no compile-error section.
-- **USER_ERRORS covers the whole schema.** It lists every invalid object in the schema, including ones the run did not touch. The pane must label the section "Compile errors in schema after this run". It must never say the run caused them.
+`userErrors` is background only. It lists every invalid object in the schema, including ones the run did not touch. The pane shows it collapsed, under the label "All compile errors in schema after this run". It must never say the run caused them.
 
-A run with status `SUCCESS` and a non-empty `userErrors` is still recorded as a success by sql-runner. The pane flags it with a warning mark, because this is the case most likely to be missed.
+**Logs from before the failure-detection change** have no `[COMPILE_FAILURES]` section and no `SCRIPT_COMPLETE` marker. For those logs, show `userErrors` under the same schema-wide label and show no compile-failure section. Do not try to work out which errors belong to the run.
 
 ---
 
@@ -175,7 +184,7 @@ From top to bottom:
 
    | Part | Content |
    |---|---|
-   | Mark | `✓` for success, `✗` for failure, `!` for success with compile errors in the schema, `…` for a log with no `[INFO] END` (still running or interrupted) |
+   | Mark | `✓` for success, `✗` for failure, `…` for a log with no `[INFO] END` (still running or interrupted) |
    | Time | From `run_ts`, as in Section 6 |
    | Environment | `env` |
    | Script | The file name only, from `script` |
@@ -184,7 +193,7 @@ From top to bottom:
    Pressing a row opens its detail view.
 3. **A footer line** in dim text, such as `25 most recent · road-cal · .codex/db-history.sqlite`.
 
-The `!` and `…` marks need the log. Read the logs for the visible rows only, and cache each parsed result in memory by `run_id`. A finished log never changes. A cached result for a log with `[INFO] END` never needs reading again.
+The `…` mark and the purpose need the log. Read the logs for the visible rows only, and cache each parsed result in memory by `run_id`. A finished log never changes. A cached result for a log with `[INFO] END` never needs reading again.
 
 Remember the two filter choices in `$.store` under the project root's path. Restore them when the pane next opens in that project.
 
@@ -197,12 +206,14 @@ From top to bottom:
    - Status and mark, environment, connection, script path
    - Started (from `run_ts`), exit code, git commit, with "(uncommitted changes)" when `git_dirty` is `true`
 3. **Intent:** the intent text in a `Code` element.
-4. **Errors:** the key errors, if any, in a `Code` element.
-5. **Compile errors in schema after this run:** the USER_ERRORS lines, if any, in a `Code` element.
-6. A row of buttons:
-   - **"Show log":** replaces sections 3 to 5 with the whole log in a `Code` element. The tree's text limit is 100,000 characters. If the log is longer, show its last 100,000 characters with a note saying it was cut.
+4. **Where it stopped:** for an incomplete script, the `FAILED_AT` location if known, or "Stopped before its last statement".
+5. **Compile failures:** each object and its error lines, if any, in a `Code` element.
+6. **Errors:** the key errors, if any, in a `Code` element.
+7. **All compile errors in schema after this run:** the `userErrors` lines, collapsed behind a button labelled "Show schema errors".
+8. A row of buttons:
+   - **"Show log":** replaces sections 3 to 7 with the whole log in a `Code` element. The tree's text limit is 100,000 characters. If the log is longer, show its last 100,000 characters with a note saying it was cut.
    - **"Copy log path":** copies the absolute log path with `$.ui.copy`.
-   - **"Ask Claude":** only on failures and `!` runs. It calls `$.prompt.submit` with this text: `Look at sql-runner run <run_id>. Its log is at <path>. Explain what went wrong and propose a fix. Do not re-run anything until I agree.` It starts a turn only when pressed.
+   - **"Ask Claude":** only on failures. It calls `$.prompt.submit` with this text: `Look at sql-runner run <run_id>. Its log is at <path>. Explain what went wrong and propose a fix. Do not re-run anything until I agree.` It starts a turn only when pressed.
 
 ---
 
@@ -222,7 +233,7 @@ Do not poll while the pane is closed.
 
 Use `claude plugin test`. Tests live beside the code as `*.test.ts`.
 
-- **Log parser:** fixtures for a successful run, a failed run with an `ORA-` error, a success with USER_ERRORS rows, a log with no `[INFO] END`, a log with no intent block, and a log with `Purpose:` on a later intent line. Put the fixtures in `plugins/sql-runner-panes/hooks/lib/fixtures/`. Build them from real logs with any secrets removed.
+- **Log parser:** fixtures for a successful run, a failed run with an `ORA-` error, a run with `[COMPILE_FAILURES]`, a run with `SCRIPT_INCOMPLETE` and `FAILED_AT`, a log from before the failure-detection change with USER_ERRORS rows, a log with no `[INFO] END`, a log with no intent block, and a log with `Purpose:` on a later intent line. Reuse the fixtures from the failure-detection spikes where possible. Put the fixtures in `plugins/sql-runner-panes/hooks/lib/fixtures/`. Build them from real logs with any secrets removed.
 - **Formatting:** time formatting for this year and an earlier year, row labels cut to a given width, and each mark.
 - **Query building:** filters produce the expected SQL. Values failing `^[a-z0-9_-]+$` are rejected.
 - **Hooks with stubbed calls:** opening the pane with no project root, with no database, and with a stubbed `sqlite3` result. The `tool.call` hook refreshes after a `run-sql.sh` command and passes other commands through untouched.
@@ -235,7 +246,7 @@ Then run this manual checklist in a real project (road-kit is a good one) and re
 3. A run from a terminal appears within 15 seconds.
 4. Filters work and are remembered after a restart.
 5. A failed run's detail view shows its key errors, and "Ask Claude" starts a turn with the expected text.
-6. A successful run that leaves an invalid object shows `!` and the compile-error section.
+6. A run with a compile failure shows `✗`, and its detail view lists the failing object and its errors.
 7. In a repository without sql-runner, the pane shows the "does not use sql-runner" message.
 
 ---
