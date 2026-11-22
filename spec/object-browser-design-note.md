@@ -20,7 +20,7 @@ The nearest existing tool is `dbview` (github.com/agntflw/claude-dbview), a Clau
 2. **A read-only database user.** Each database gets a dedicated read-only user. Its password is a road-secrets entry, such as `road/road-cal/dev/db/ROADCAL_RO`, synced to a SQLcl saved connection.
 3. **A cached catalogue.** The pane loads the whole catalogue (objects, columns, constraints, package members) in one SQLcl call, with `set sqlformat json`. It caches the result in memory and refreshes it on request. Browsing the tree needs no further database calls.
 4. **Live calls only for detail.** Sample rows and DDL are fetched when the user asks for them, one SQLcl call each.
-5. **A Node helper only if needed.** Each SQLcl call starts a Java process and a connection, which takes a few seconds. If live calls prove too slow, add a small local Node server using node-oracledb in Thin mode. It would hold a connection pool and get its password from `road-secrets get`. It is not built unless the first version shows the need.
+5. **A Node helper only if needed.** Each SQLcl call starts a Java process and opens a connection. That takes a few seconds. If live calls prove too slow, add a small local Node server using node-oracledb in Thin mode. It would hold a connection pool and get its password from `road-secrets get`. It is not built unless the first version shows the need.
 6. **No MCP.** The pane talks to SQLcl or the Node helper directly. SQLcl's MCP server was rejected because it logs every request to `DBTOOLS$MCP_LOG` and tags each query as AI activity. The user's own browsing would pollute that audit trail.
 
 ---
