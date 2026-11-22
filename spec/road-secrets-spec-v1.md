@@ -1,6 +1,6 @@
 # road-secrets Specification
 
-**Version:** 1.2 (draft)
+**Version:** 1.3 (draft)
 **Date:** 2026-11-22
 **Repository:** `sql-runner`
 **Status:** Ready for build, subject to the spikes in Section 12
@@ -343,6 +343,21 @@ The script must pass the repository's `make lint` (`bash -n` and `shellcheck`).
 
 - **sql-runner `README.md`:** add a short "Passwords" section covering installation and the commands.
 - **`skills/sql-runner/SKILL.md`:** add a rule. When a script or test needs a dev or test password, get it with `road-secrets get <key>` and pass it on through standard input or an environment variable. Never echo it, never write it to a file in a repository, and never ask the user for it. Never create or change an entry for `prod`.
+- **Approval gate for ADMIN work:** document in the README that the user should add these rules to the `ask` list in `~/.claude/settings.json`. That file applies to every project, and the Code tab of the desktop app reads it too.
+
+  ```json
+  {
+    "permissions": {
+      "ask": [
+        "Bash(bin/run-sql.sh --env admin *)",
+        "Bash(./bin/run-sql.sh --env admin *)",
+        "Bash(road-secrets get *ADMIN)"
+      ]
+    }
+  }
+  ```
+
+  Claude Code then asks before running a script as ADMIN, or before reading an ADMIN password. The user approves, and the password comes from the saved SQLcl connection, which `sync` keeps current. Nobody types or pastes it. The rules match the command text Claude usually writes. Claude Code's documentation says such rules are not a security boundary, because the same program can be called in other forms. The skill must therefore also tell Claude to always write `--env` as the first argument to `run-sql.sh`.
 - **`../road-atlas`:** add a ledger note that `road-secrets` exists, as required by `AGENTS.md`. The note should say that road-kit's principal passwords can now be managed through it.
 
 ---
