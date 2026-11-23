@@ -1,9 +1,9 @@
 # road-secrets Specification
 
-**Version:** 1.4 (draft)
+**Version:** 1.5 (draft)
 **Date:** 2026-11-23
 **Repository:** `sql-runner`
-**Status:** Ready for build, subject to the spikes in Section 12 and the open questions in Section 16
+**Status:** Ready for build. Spikes S1 to S3 are done (Section 12). Open questions are in Section 16.
 
 ---
 
@@ -53,9 +53,9 @@ These facts shaped the design. Do not change the design without revisiting them.
 2. **The Keychain cannot protect against processes running as the user either.** Unattended Claude Code runs must be able to read passwords. No lock or prompt can stand in their way. Security comes from three other measures: every managed password is for dev or test, every account has least privilege, and production passwords are never stored.
 3. **Passwords must never appear on a command line.** Command-line arguments are visible through `ps` and land in shell history. This rule already governs `run-sql.sh` and `set-principal-password.sh`. It is why the tool is a compiled Swift binary that calls the Keychain API directly, and why it never shells out to `security add-generic-password -w`.
 4. **Passwords must never reach a log.** `run-sql.sh` logs live under `logs/` and are tracked in git. The tool never runs password-bearing SQL through `run-sql.sh`. It drives SQLcl itself, with echo off, and scrubs SQLcl's output before showing it.
-5. **The binary's identity must be stable.** Each Keychain entry carries an access list naming the programs that can read it without a prompt. macOS identifies a program by its path and code signature. The binary therefore lives at one fixed per-user path, outside every repository.
+5. **The binary's identity must be stable.** Each Keychain entry carries an access list naming the programs that can read it without a prompt. macOS identifies a program by its code signature, and a byte-identical copy at another path is trusted too. The binary has an ad-hoc signature, so every rebuild gives it a new identity (Section 9.2). It lives at one fixed per-user path, outside every repository.
 6. **Production is a property of the database, not only of the key.** A key's `env` segment says what the key is for. It cannot say what else the same database serves. ADMIN controls the whole database, so an ADMIN entry is allowed only for a database that serves no production environment. On 2026-11-23, road-atlas records road-blogger `prod` and road-beacon `prod` on quoratedb, so quoratedb's ADMIN password is a production password and is never stored. Today only roadkitdb's ADMIN can be managed. Claude Code sometimes needs ADMIN on a dev or test database. Keeping that ADMIN out of the tool would not stop that. It would only push the password into SQLcl's store or into a prompt. Recovery from a mistake relies on Autonomous Database's automatic backups.
-7. **Saved connections share login users.** In road-atlas's scan of 2026-11-15, 142 of 159 saved connections log in as `LIVEHUB_DEPLOY` through a proxy (`LIVEHUB_DEPLOY[SCHEMA]`): 125 on quoratedb and 17 on roadkitdb. Three more log in as ADMIN on quoratedb. A password belongs to the database user, not to a connection, so changing it breaks every connection that logs in as that user. The tool therefore re-saves all of them, and keeps each one's proxy schema.
+7. **Saved connections share login users.** On 2026-11-23, spike S2 found that 162 of 197 saved connections log in as `LIVEHUB_DEPLOY` through a proxy (`LIVEHUB_DEPLOY[SCHEMA]`): 145 on quoratedb and 17 on roadkitdb. road-atlas's scan of 2026-11-15 had found 142 of 159, and three more that log in as ADMIN on quoratedb. A password belongs to the database user, not to a connection, so changing it breaks every connection that logs in as that user. The tool therefore re-saves all of them, and keeps each one's proxy schema.
 8. **road-atlas is the source of truth for where things run.** `environments.conf` says which app and environment runs on which database, schema, connection and ORDS host. `databases.conf` lists the databases. The tool reads both at run time and does not keep its own copy. It finds road-atlas at `$ROAD_ATLAS`, or else at `~/Projects/road-atlas`. Any check that needs road-atlas fails closed: if the files cannot be read, the tool refuses (exit 6).
 9. **`config/local.env` is where the test scripts read the principal password (road-atlas `D-03`).** `get-test-token.sh`, `run-endpoint-tests.sh` and `run-browser-smoke.sh` read `ROAD_TEST_PASSWORD` from it. The tool does not change those scripts. It writes the new password into `config/local.env` in the same run that changes it, which is the "same sitting" rule `D-03` already states.
 10. **Changing a principal's password logs it out everywhere (road-atlas `F-09`).** `set-principal-password.sh` updates `credentials_changed_at`, the global-logout epoch. Every live session for that principal ends.
@@ -69,7 +69,7 @@ These facts shaped the design. Do not change the design without revisiting them.
 | Source (Swift package) | `sql-runner/tools/road-secrets/` |
 | Installer | `sql-runner/bin/install-road-secrets.sh` |
 | Installed binary | `~/.local/bin/road-secrets` |
-| Dedicated keychain | `~/Library/Keychains/road.keychain-db` |
+| Keychain | The user's login keychain (Section 9.1) |
 | Word lists | `sql-runner/tools/road-secrets/Resources/adjectives.txt` and `nouns.txt` |
 | road-atlas (read only) | `$ROAD_ATLAS`, default `~/Projects/road-atlas` |
 | This spec | `sql-runner/spec/road-secrets-spec-v1.md` |
@@ -107,7 +107,7 @@ road/roadkitdb/dev/db/ADMIN
 
 ### 5.2 Mapping to the Keychain
 
-Each key is stored as one generic-password item:
+Each key is stored as one generic-password item in the user's login keychain:
 
 | Keychain attribute | Value |
 |---|---|
@@ -126,7 +126,7 @@ For a `db` entry:
 ```json
 { "set_at": "2026-11-22T00:20:00Z", "db": "quoratedb",
   "sqlcl_connections": ["road_cal_dev"],
-  "wallet": "/Users/simon/wallets/quoratedb", "tns": "quoratedb_high" }
+  "wallet": "/Users/simon/wallets/Wallet_quoratedb.zip", "tns": "quoratedb_high" }
 ```
 
 For a `principal` entry:
@@ -140,7 +140,7 @@ For a `principal` entry:
 |---|---|
 | `db` | The database name, derived from `tns` (Section 5.6) |
 | `sqlcl_connections` | Every SQLcl saved connection that logs in as this user on this database, found by discovery (Section 7.3, step 4). Recorded for information. Discovery runs again on every `set`, `sync` and `check`. |
-| `wallet` | The wallet directory for that database. The tool sets `TNS_ADMIN` to this path for every SQLcl process it starts. |
+| `wallet` | The wallet for that database: preferably the wallet zip, or else a wallet directory. Every SQLcl connect the tool makes with an explicit user and password uses `conn -cloudconfig` with this wallet (Section 8.1). |
 | `tns` | The TNS name (the alias in the wallet's `tnsnames.ora`) |
 | `project` | The app's project root, where `config/local.env` lives |
 | `ords_url` | The ORDS base URL for the app and environment |
@@ -200,7 +200,7 @@ For example, `Brave.Otter.042`.
 
 Autonomous Database requires 12 to 30 characters, at least one uppercase letter, one lowercase letter and one digit, no double quotes, and no user name. With words of 4 to 8 letters, every password is 13 to 21 characters long. The capital letters, lowercase letters and digits are always present.
 
-The dots must be checked in spike S2. Oracle requires a password containing characters other than letters, digits, `_`, `$` and `#` to be double-quoted in SQL. The tool always quotes passwords in `alter user`. S2 must confirm that SQLcl's `conn` and `-savepwd` accept a password containing dots.
+Oracle requires a password containing characters other than letters, digits, `_`, `$` and `#` to be double-quoted in SQL. The tool always quotes passwords, in `alter user` and in `conn`. Spike S2 confirmed that SQLcl's `conn` and `-savepwd` accept a password containing dots, quoted or unquoted.
 
 The format contains no single quote, so it can be written single-quoted into `config/local.env` without escaping.
 
@@ -216,7 +216,7 @@ All commands take a key as their main argument. Any line printed by `list` can b
 
 | Command | Purpose |
 |---|---|
-| `init` | One-time setup of the dedicated keychain |
+| `init` | Check that the tool can use the login keychain |
 | `list [prefix] [--all]` | List keys. Never shows passwords. |
 | `set <key> [options]` | Generate a new password and apply it everywhere |
 | `sync <key>` | Push the Keychain password into every copy: SQLcl for `db`, `config/local.env` for `principal` |
@@ -227,14 +227,9 @@ All commands take a key as their main argument. Any line printed by `list` can b
 
 ### 7.1 `init`
 
-1. If `~/Library/Keychains/road.keychain-db` exists, report it and exit 0.
-2. Generate a random 32-character password for the keychain itself.
-3. Store that password in the **login** keychain, as service `road-secrets/keychain-password`, account `road`. The user never sees or needs it.
-4. Create the dedicated keychain with that password.
-5. Set the keychain to never lock on a timer and never lock on sleep.
-6. Add it to the user's keychain search list. It then appears in Keychain Access.
+`init` creates nothing permanent. It writes, reads and deletes a test item, service `road-secrets/init-check`, in the login keychain. The item's access list names the binary, as for every item (Section 9.1). If all three steps succeed, it prints `road-secrets: login keychain OK` and exits 0. Otherwise it exits 4, with the message from Section 9.3 where that applies.
 
-On each later run, the tool opens the dedicated keychain by path. If it is locked (for example after a restart), the tool unlocks it with the password held in the login keychain.
+`init` can be run any number of times. There is no dedicated keychain. Spike S1 showed that after a rebuild, a dedicated keychain asks for its own password, which nobody knows (Section 12).
 
 ### 7.2 `list [prefix] [--all]`
 
@@ -250,23 +245,23 @@ The fields are key, date set and label, separated by tabs. A prefix narrows the 
 
 Options:
 
-- `--connection <name>`, `--wallet <path>` and `--tns <name>`: one SQLcl saved connection that logs in as the user, the wallet directory and the TNS name. All three are required the first time a key is set. On later runs they are taken from the entry's metadata.
+- `--connection <name>`, `--wallet <path>` and `--tns <name>`: one SQLcl saved connection that logs in as the user, the wallet (a zip, or a directory) and the TNS name. All three are required the first time a key is set. On later runs they are taken from the entry's metadata.
 - `--via-admin`: change the password as ADMIN on the same database (see step 6).
 - `--yes`: proceed without confirmation when more than one saved connection will be re-saved (step 4).
 
 Steps:
 
-1. **Resolve the connection.** Use the options, or else the entry's metadata. If neither exists, exit 2 with a message listing the missing options. Check that the wallet directory exists and that its `tnsnames.ora` contains the TNS name. Derive the database name (Section 5.6).
-2. **Read the connection details.** Run `connmgr show <name>` in SQLcl and parse the user name and connect string. The login user is the part before any `[`, so `LIVEHUB_DEPLOY[AV_ACC]` logs in as `LIVEHUB_DEPLOY`. If the login user does not match the key's `NAME`, exit 2.
+1. **Resolve the connection.** Use the options, or else the entry's metadata. If neither exists, exit 2 with a message listing the missing options. Check that the wallet (a zip or a directory) exists and that its `tnsnames.ora` contains the TNS name. Derive the database name (Section 5.6).
+2. **Read the connection details.** Run `connmgr show <name>` in SQLcl and parse the user name and connect string. The login user is the part before any `[`, so `LIVEHUB_DEPLOY[AV_ACC]` logs in as `LIVEHUB_DEPLOY`. SQLcl keeps user names as they were typed, often in lowercase (`livehub_deploy[av_acc]`), so compare ignoring case. If the login user does not match the key's `NAME`, exit 2.
 3. **Apply the production guard** (Section 5.7) and, for an ADMIN key, the one-per-database rule (Section 5.5).
-4. **Discover every connection that logs in as this user.** Run `connmgr list`, then `connmgr show` for each saved connection, in one SQLcl session. Keep every connection whose login user is `NAME` and whose connect string resolves to the same database name, whatever its service suffix or proxy schema. Apply the production guard to the result. Print the number of connections and their names. If there is more than one, ask for confirmation at the terminal unless `--yes` is given. If standard input is not a terminal and `--yes` is absent, exit 2.
+4. **Discover every connection that logs in as this user.** Run `connmgr list -flat`, then `connmgr show` for each saved connection, in one SQLcl session (Section 8.2). Keep every connection whose login user equals `NAME`, ignoring case, and whose connect string resolves to the same database name, whatever its service suffix or proxy schema. Apply the production guard to the result. Print the number of connections and their names. If there is more than one, ask for confirmation at the terminal unless `--yes` is given. If standard input is not a terminal and `--yes` is absent, exit 2.
 5. **Adopt the account if needed.** If `--via-admin` is absent and no current entry exists, the account has not been adopted yet. Ask for its current password at the terminal with echo off and use that as the old password. If standard input is not a terminal, exit 2 with a message suggesting `--via-admin`. This is also how the ADMIN entry for a database is first adopted.
 6. **Store the new value first.** Generate a password. Copy the current entry (if any) to the previous item. Write the new password to the current entry.
 7. **Change the password in the database.** Drive SQLcl through standard input, with echo off:
    - **Default (self-change):** connect with `conn -name <connection>`, then run `alter user <NAME> identified by "<new>" replace "<old>";`. The old password comes from the previous item, or from the terminal during adoption.
-   - **With `--via-admin`:** find the ADMIN entry for the key's database (Section 5.5). If there is none, exit 2 with a message saying the ADMIN entry for this database must be adopted first, or that this database serves production and has none. Connect as ADMIN to the entry's TNS name, with `TNS_ADMIN` set to the entry's wallet. Then run `alter user <NAME> identified by "<new>";`. This is how an account whose password has been forgotten is adopted. It works because ADMIN does not need the old password. `--via-admin` cannot be used on the ADMIN entry itself.
+   - **With `--via-admin`:** find the ADMIN entry for the key's database (Section 5.5). If there is none, exit 2 with a message saying the ADMIN entry for this database must be adopted first, or that this database serves production and has none. Connect as ADMIN to the entry's TNS name with `conn -cloudconfig`, using the ADMIN entry's wallet (Section 8.1). Then run `alter user <NAME> identified by "<new>";`. This is how an account whose password has been forgotten is adopted. It works because ADMIN does not need the old password. `--via-admin` cannot be used on the ADMIN entry itself.
 8. **On failure:** restore the current entry from the previous item, or delete it if there was none. Show the scrubbed SQLcl error and exit 5.
-9. **Re-save every discovered connection** with the new password, in one SQLcl session, keeping every other property, including the proxy schema. The method is decided by spike S2 (Section 12). If any re-save fails, keep the Keychain entry, because the database already has the new password. List the connections that failed, tell the user to run `sync` and exit 5.
+9. **Re-save every discovered connection** with the new password, in one SQLcl session, keeping its user, proxy schema and TNS name. Use the method in Section 8.1, then run `connmgr test` on each. If any re-save fails, keep the Keychain entry, because the database already has the new password. List the connections that failed, tell the user to run `sync` and exit 5.
 10. **Finish.** Delete the previous item, update the metadata and print a one-line success message naming how many connections were re-saved. Never print the password.
 
 ### 7.4 `set` for a `principal` key
@@ -282,14 +277,14 @@ Steps:
 2. Apply the production guard's `env` rule (Section 5.7).
 3. Print a one-line warning that every live session for this principal will end (Section 3, item 10).
 4. Generate a password. Copy the current entry (if any) to the previous item. Write the new password to the current entry.
-5. Run `bin/set-principal-password.sh --env <env> --subject <NAME>` from the project root. Write the password to its standard input twice, each followed by a newline. The script reads a password and then a confirmation.
+5. Run `bin/set-principal-password.sh --env <env> --subject <NAME>` from the project root. Write the password to its standard input twice, each followed by a newline. The script reads a password and then a confirmation. Spike S3 confirmed that this works when standard input is not a terminal.
 6. If the script exits non-zero, restore the current entry from the previous item (or delete it), show the script's output and exit 5.
 7. **Update `config/local.env`** (Section 7.11).
 8. Delete the previous item and print a one-line success message.
 
 ### 7.5 `sync <key>`
 
-For a `db` key, it discovers the connections again (Section 7.3, step 4), re-saves each with the Keychain password using the spike S2 method, then runs `connmgr test` on each and reports any that fail.
+For a `db` key, it discovers the connections again (Section 7.3, step 4), re-saves each with the Keychain password using the method in Section 8.1, then runs `connmgr test` on each and reports any that fail.
 
 For a `principal` key, it updates `config/local.env` (Section 7.11).
 
@@ -307,7 +302,7 @@ Puts the password on the clipboard using `NSPasteboard`. Prints `copied <key>` t
 
 **For `db` keys,** it runs two checks and reports each one:
 
-1. Connect through SQLcl as `<NAME>` to the entry's TNS name, using the Keychain password and the entry's wallet. Then run `select 1 from dual`. This proves the Keychain copy works.
+1. Connect through SQLcl as `<NAME>` to the entry's TNS name with `conn -cloudconfig`, using the Keychain password and the entry's wallet. Then run `select 1 from dual`. This proves the Keychain copy works.
 2. Discover the connections again and run `connmgr test` on each. This proves SQLcl's copies work. Report the number that pass and name any that fail.
 
 **For `principal` keys,** it runs two checks:
@@ -352,28 +347,64 @@ Removes the entry and any previous item. Asks for confirmation unless `--yes` is
 ## 8. Driving SQLcl
 
 - Run SQLcl as a child process using `Process`. Write commands to its standard input. Never put a password in its argument list.
-- The first lines written are `set echo off`, `set feedback off` and `set define off`.
-- Capture standard output and standard error together. Before showing any output, replace every occurrence of the old or new password with `********`.
-- Use `$SQLCL_BIN` if it is set. Otherwise use `sql` from `PATH`. Pass the environment through. Set `TNS_ADMIN` to the entry's wallet directory.
-- Replace every occurrence of the ADMIN password in output with `********` as well, when one is used.
-- Treat any `ORA-` or `SP2-` line, or a non-zero exit, as failure. This matches the run-sql spec. That spec counts SQLcl session errors as failures even when the exit code is 0.
+- The first lines written are `set echo off`, `set feedback on` and `set define off`. Feedback must stay on. Spike S2 showed that with `set feedback off`, a failed `conn` prints nothing at all, and SQLcl still exits 0.
+- Capture standard output and standard error together. Before showing any output, replace every occurrence of the old or new password with `********`. When the ADMIN password is used, replace that as well.
+- Use `$SQLCL_BIN` if it is set. Otherwise use `sql` from `PATH`. Pass the environment through. Do not set `TNS_ADMIN` (Section 8.1).
+- Run `show user` after every `conn`. If it does not report the expected user, the connect failed, even if nothing else says so.
+- Treat any of these as failure:
+  - an `ORA-` or `SP2-` line
+  - a `Connection failed` line
+  - an `already exists` line
+  - a wrong user from `show user`
+  - a non-zero exit
+
+  This follows the run-sql spec, which counts SQLcl session errors as failures even when the exit code is 0.
 - Run discovery and re-saving for many connections in one SQLcl session, not one process per connection.
+
+### 8.1 Connecting and re-saving
+
+Spike S2 tried two ways of giving SQLcl a database's wallet. Setting `TNS_ADMIN` to a wallet directory under `~/.dbtools/connections/` did not use the wallet: every connect retried for about 65 seconds, then failed with `ORA-12529`. `conn -cloudconfig <wallet.zip>` worked at once. The tool therefore uses `-cloudconfig` for every connect that gives a user and password:
+
+```
+conn -cloudconfig <zip> <login>/"<password>"@<tns>
+conn -cloudconfig <zip> -save <name> -savepwd -replace <login>/"<password>"@<tns>
+```
+
+- `<login>` is the user as `connmgr show` gives it, including any proxy schema, such as `livehub_deploy[av_acc]`. The proxy schema survives the re-save.
+- Always pass `-replace`. Without it, re-saving an existing name prints `A connection named <name> already exists`, saves nothing and exits 0.
+- A re-save rewrites the connection from these arguments. Re-save the connections for one database at a time, with that database's wallet.
+- If the entry's `wallet` is a directory, zip it at the start of the run. Put the zip in a new private temporary directory (mode 0700, file mode 0600) outside every repository, and delete it on exit.
+- After re-saving, run `connmgr test` on each connection in one session.
+- Connections saved by name (`conn -name <connection>`, as in the self-change in Section 7.3, step 7) keep using their own stored wallet.
+
+Measured in spike S2 on roadkitdb: re-saving 17 proxy connections in one session took 7.6 seconds, or about 0.44 seconds each. `connmgr test` on all 17 took 4.7 seconds. At that rate, re-saving quoratedb's 145 `LIVEHUB_DEPLOY` connections takes about 64 seconds.
+
+### 8.2 Discovery
+
+`connmgr list -flat` prints one name per line. `connmgr show <name>` prints `Name:`, `Connect String:` and `User:` lines, and both parse reliably. In spike S2, both commands for all 197 saved connections took about 3 seconds in one session.
 
 ---
 
 ## 9. Keychain access
 
-### 9.1 Access lists
+### 9.1 Where items live
 
-Every item the tool creates lists `~/.local/bin/road-secrets` as its only trusted program. Reads by the tool then raise no prompt. Other programs, including the `security` command-line tool, get a prompt.
+Every item is stored in the user's **login keychain**, which macOS unlocks at login. There is no dedicated keychain (Section 12, S1).
+
+Every item the tool creates lists `~/.local/bin/road-secrets` as its only trusted program. Reads by the tool then raise no prompt. Other programs, including the `security` command-line tool, get a prompt. `list` reads only attributes, so it never raises a prompt.
 
 ### 9.2 Rebuilds
 
-The binary has an ad-hoc signature. Each rebuild therefore changes its identity. After a rebuild, the first read of each item raises an "Always Allow" prompt on the Mac's screen. This is accepted. The installer must print a warning to that effect. It must also say that the user should not rebuild just before leaving an unattended run.
+The binary has an ad-hoc signature, so each rebuild changes its identity. After a rebuild, the first read of each item raises an "Always Allow" prompt on the Mac's screen. Expect one prompt for each item read, not one in all. The user clicks Always Allow, and later reads of that item raise no prompt. Because the items are in the login keychain, the prompt asks at most for the user's own login password, never for a password nobody knows.
+
+This is accepted. The installer must print a warning to that effect. It must also say that the user should not rebuild just before leaving an unattended run.
 
 ### 9.3 Unavailable Keychain
 
-If the Keychain refuses access without user interaction, for example in an SSH session, exit 4 with this message:
+Exit 4 with the message below if the Keychain refuses access without user interaction, for example in an SSH session. Treat both of these statuses that way:
+
+- `errSecInteractionNotAllowed`
+- `errSecAuthFailed` (-25293). Spike S1 showed that this is what a refused access-list check returns when no prompt can be shown, for example after a rebuild.
 
 ```
 road-secrets: the Keychain is not available in this session. Run from the desktop session on this Mac.
@@ -426,32 +457,20 @@ The script must pass the repository's `make lint` (`bash -n` and `shellcheck`).
 
 ## 12. Spikes
 
-Run these first, in order. Record each result in `docs/journal/`. If a spike fails, stop and report before building the affected part.
+The spikes were run on 2026-11-23. The full results are in `docs/journal/2026-11-23.md` on the `spike/road-secrets` branch, and the spike code is in `tools/road-secrets/Spikes/` on that branch.
 
-**S1. Dedicated keychain mechanics.** On the Mac mini's current macOS version, from a Swift binary:
+**S1. Dedicated keychain mechanics: failed, so the login keychain is used.** The deprecated APIs (`SecKeychainCreate`, `SecAccessCreate`) worked on macOS 27.3. Creating the keychain, unlocking it and every item operation passed, and reads from a Claude Code session in the desktop app raised no prompt. But after a rebuild, macOS asked for the dedicated keychain's own password. That password is random and held only in the login keychain, so nobody could answer the prompt. The tool therefore uses the login keychain, with the same services and keys, and `init` only checks access (Sections 4, 7.1 and 9).
 
-- Create a file-based keychain at a given path, set it never to lock, and add it to the search list.
-- Store its password in the login keychain, and unlock the dedicated keychain with it after a restart.
-- Add, read, update and delete a generic-password item in the dedicated keychain, with an access list naming only the binary.
-- Read the item from a Claude Code session in the Claude desktop app with no prompt.
-- Rebuild the binary and confirm that exactly one "Always Allow" prompt appears, and none after it.
+**S2. Re-saving SQLcl connections: passed with `-cloudconfig`.**
 
-Several of the APIs involved, such as `SecKeychainCreate` and `SecAccessCreate`, are deprecated but still shipped. If they fail or prove fragile, fall back to the **login keychain**, using the same services and keys, and drop `init` steps 2 to 6. Report which path was taken.
+- Setting `TNS_ADMIN` to a wallet directory failed with `ORA-12529`. `conn -cloudconfig <zip> -save <name> -savepwd -replace` works (Section 8.1).
+- Dotted passwords work quoted and unquoted. Proxy schemas survive a re-save, and `connmgr test` passes.
+- With `set feedback off`, a failed connect prints nothing and exits 0, so feedback stays on and every connect is checked with `show user` (Section 8).
+- No password appeared in SQLcl's output, in its history or in any file written during the run.
+- Discovery parses reliably. User names are stored as typed, often in lowercase.
+- The timings and counts are in Sections 3.7, 8.1 and 8.2.
 
-**S2. Re-saving SQLcl connections.** Find a reliable way to replace the stored password of an existing saved connection while keeping its other properties, including any wallet or cloud configuration. Candidates:
-
-- With `TNS_ADMIN` set to the entry's wallet: `conn -save <name> -savepwd -replace <user>/"<pwd>"@<tns>`
-- The same, using `-cloudconfig` if a wallet zip proves more reliable than a wallet directory
-
-Confirm that a password containing dots works, quoted and unquoted.
-
-Confirm that a proxy connection (`USER[SCHEMA]`) keeps its proxy schema after re-saving. Confirm that `connmgr list` and `connmgr show` give enough to discover every connection for a user, and parse reliably.
-
-Re-save all 17 `LIVEHUB_DEPLOY` connections on roadkitdb in one SQLcl session, and record how long it takes. Estimate the time for the 125 on quoratedb from that.
-
-Verify with `connmgr test`. Confirm that the password never appears in SQLcl's output or history.
-
-**S3. Piping into `set-principal-password.sh`.** The script reads with `read -rs` and has no check for a terminal. Confirm that it accepts the password twice on standard input when standard input is not a terminal, and that a login with that password then succeeds.
+**S3. Piping into `set-principal-password.sh`: passed.** The script accepted the password twice on standard input when standard input was not a terminal. A login with `bin/get-test-token.sh` then succeeded.
 
 ---
 
@@ -459,7 +478,7 @@ Verify with `connmgr test`. Confirm that the password never appears in SQLcl's o
 
 - **Unit tests (`swift test`):** key parsing and validation, the rejection of lowercase names, the `prod` refusal, ADMIN key naming, database-name derivation, the production guard against a fixture `environments.conf` and `databases.conf` (including a missing file), login-user parsing of `USER[SCHEMA]`, Keychain attribute mapping, password generation (run 10,000 generations and check length, character classes, the three-digit number and the user-name rule), word-list validation (letters only, 4 to 8 letters, no duplicates), `config/local.env` rewriting against fixtures (line present, line absent, commented `ROAD_TEST_USERNAME`, other principal) and output scrubbing.
 - **Integration checklist (manual, recorded in `docs/journal/`):**
-  1. `init` on a clean machine, then a second `init` reports that the keychain exists.
+  1. `init` succeeds, and a second `init` succeeds too. Neither leaves an item behind.
   2. Adopt roadkitdb's ADMIN by typing its current password, rotate it, then run `check`. All succeed.
   3. `set` for quoratedb's ADMIN exits 6.
   4. `set --via-admin` adopts a dev database user on roadkitdb. `set` by typing the current password adopts a dev database user on quoratedb. `check` passes both checks for each.
@@ -470,15 +489,16 @@ Verify with `connmgr test`. Confirm that the password never appears in SQLcl's o
   9. `sync` after deleting and recreating a SQLcl connection restores it.
   10. `set` for a principal in road-kit updates `config/local.env`, `check` passes against the dev ORDS endpoint, and `bin/get-test-token.sh` then works.
   11. `get` from a script in a Claude Code session runs with no prompt.
-  12. `list`, `copy` and `delete` behave as specified.
-  13. `set` for any key with environment `prod` exits 6, and `set` for the schema of a prod `env` line exits 6.
-  14. `ps` during `set` shows no password in any argument list.
+  12. After a rebuild, the first `get` of an item raises one "Always Allow" prompt, which asks for nothing the user does not know. After Always Allow, a second `get` raises none.
+  13. `list`, `copy` and `delete` behave as specified.
+  14. `set` for any key with environment `prod` exits 6, and `set` for the schema of a prod `env` line exits 6.
+  15. `ps` during `set` shows no password in any argument list.
 
 ---
 
 ## 14. Build order
 
-1. Spikes S1 to S3
+1. Spikes S1 to S3 (done 2026-11-23, Section 12)
 2. Swift package skeleton, key parsing, password generator and unit tests
 3. road-atlas reader and production guard
 4. Keychain store (`init`, `list`, `get`, `copy`, `delete`)
@@ -506,8 +526,20 @@ These are not part of the build.
 
 1. **Does anything else hold `LIVEHUB_DEPLOY`'s password?** Resolved 2026-11-23: ai-live-hub may keep a copy in its `config/local.env`. That copy is superseded by the Keychain entry. Before adopting `LIVEHUB_DEPLOY`, check ai-live-hub's `config/local.env`, and after adopting it, have ai-live-hub read the password with `road-secrets get` instead.
 2. **Should quoratedb's prod environments move off it?** Section 3, item 6 follows road-atlas as it stands. If road-blogger and road-beacon `prod` move to their own database, quoratedb's ADMIN becomes manageable with no change to the tool.
+3. **Open item for road-kit, not this tool.** road-kit's `bin/get-test-token.sh` puts the password in curl's `-d` argument, which `ps` can show while curl runs. road-kit should send the body on standard input instead, with `--data @-`. This tool's own `check` uses `URLSession` and is not affected (Section 7.8).
 
 ---
+
+## Changes in 1.5
+
+- Spikes S1 to S3 are done. Section 12 records the results and points to the journal.
+- Items live in the login keychain. The dedicated keychain is removed from the layout, and `init` only checks access (Sections 4, 5.2, 7.1, 9.1). After a rebuild, expect one "Always Allow" prompt for each item read (Section 9.2).
+- Exit 4 also covers `errSecAuthFailed` (-25293) from a refused read (Section 9.3).
+- SQLcl runs with `set feedback on`, and `show user` is checked after every connect. `already exists` and `Connection failed` count as failures (Section 8).
+- Connects and re-saves use `conn -cloudconfig <wallet zip>`, with `-replace`, instead of setting `TNS_ADMIN` to a wallet directory. The `wallet` metadata holds a zip or a directory (Sections 5.3, 7.3, 7.8, 8.1).
+- User names are compared ignoring case during discovery (Section 7.3).
+- Counts and timings are updated: 145 `LIVEHUB_DEPLOY` connections on quoratedb and 197 saved connections in all. A full re-save on quoratedb takes about 64 seconds, and discovery about 3 seconds (Sections 3.7, 8.1, 8.2).
+- road-kit's `get-test-token.sh` exposing the password to `ps` is recorded as an open item for road-kit (Section 16).
 
 ## Changes in 1.4
 
