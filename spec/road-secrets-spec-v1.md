@@ -504,7 +504,7 @@ These are not part of the build.
 
 ## 16. Open questions
 
-1. **Does anything else hold `LIVEHUB_DEPLOY`'s password?** The AI Live Hub deploy scripts or a demo environment may keep a copy outside SQLcl. If they do, rotating it breaks them. Check ai-live-hub before adopting that user.
+1. **Does anything else hold `LIVEHUB_DEPLOY`'s password?** Resolved 2026-11-23: ai-live-hub may keep a copy in its `config/local.env`. That copy is superseded by the Keychain entry. Before adopting `LIVEHUB_DEPLOY`, check ai-live-hub's `config/local.env`, and after adopting it, have ai-live-hub read the password with `road-secrets get` instead.
 2. **Should quoratedb's prod environments move off it?** Section 3, item 6 follows road-atlas as it stands. If road-blogger and road-beacon `prod` move to their own database, quoratedb's ADMIN becomes manageable with no change to the tool.
 
 ---
