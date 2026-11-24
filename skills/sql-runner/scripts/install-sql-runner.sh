@@ -68,6 +68,16 @@ copy_from_root() {
   else
     echo "[INFO] Preserved existing config/connections.conf"
   fi
+
+  road_secrets_pointer
+}
+
+# road-secrets is a per-user tool installed once per Mac, never into a project
+# (road-secrets spec Section 4). Only say where to get it if it is missing.
+road_secrets_pointer() {
+  if [[ ! -x "${HOME}/.local/bin/road-secrets" ]]; then
+    echo "[INFO] road-secrets is not installed; to manage dev and test passwords, run bin/install-road-secrets.sh from a sql-runner checkout"
+  fi
 }
 
 has_local_runner_source() {

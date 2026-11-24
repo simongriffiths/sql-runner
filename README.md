@@ -182,6 +182,61 @@ Show a full run record:
 bin/db-history-show.sh <run_id-or-prefix>
 ```
 
+## Passwords
+
+`road-secrets` generates, stores and applies passwords for ROAD development and test environments. Nobody needs to choose or remember one. It keeps each password in the macOS login keychain and keeps the copies up to date: the database user's SQLcl saved connections, or a road-kit app's `config/local.env`. It refuses anything for production. The full design is in `spec/road-secrets-spec-v1.md`.
+
+It is a per-user tool for macOS, installed once per Mac. It is not copied into projects.
+
+```bash
+bin/install-road-secrets.sh
+```
+
+This builds the Swift package in `tools/road-secrets`, installs the binary at `~/.local/bin/road-secrets` and checks the login keychain. It needs Swift (`xcode-select --install`) and a road-atlas checkout at `~/Projects/road-atlas`, or wherever `ROAD_ATLAS` points.
+
+Every rebuild gives the binary a new identity. Afterwards, the first read of each Keychain item shows an "Always Allow" prompt on the Mac's screen. Click it once per item, and do not rebuild just before leaving an unattended run.
+
+Keys look like `road/<app>/<env>/<db|principal>/<NAME>`:
+
+```text
+road/road-kit/dev/principal/ADMIN    a road-kit scaffold login
+road/roadkitdb/dev/db/ADMIN          ADMIN of a database that serves no production
+road/livehub/dev/db/LIVEHUB_DEPLOY   a database user, with every saved connection that logs in as it
+```
+
+| Command | What it does |
+|---|---|
+| `road-secrets list [prefix] [--all]` | Lists keys. Never shows passwords. |
+| `road-secrets set <key> [options]` | Generates a new password and applies it everywhere |
+| `road-secrets sync <key>` | Pushes the Keychain password into every copy |
+| `road-secrets get <key>` | Prints the password, for scripts |
+| `road-secrets copy <key>` | Puts the password on the clipboard |
+| `road-secrets check <key>` | Proves the stored password works |
+| `road-secrets delete <key> [--yes]` | Removes the entry. Changes nothing else. |
+
+The first `set` for a database user needs `--connection <saved connection> --wallet <wallet zip or directory> --tns <TNS name>`. To adopt the user, either type its current password at the terminal, or use `--via-admin` once the database's ADMIN entry exists. `set` changes the password once and re-saves every saved connection that logs in as that user, including proxy logins. When there is more than one, it asks first, unless you pass `--yes`. Run it in a desktop session on the Mac, not over SSH.
+
+### Approval gate for ADMIN work
+
+Add these rules to the `ask` list in `~/.claude/settings.json`. That file applies to every project, and the Code tab of the Claude desktop app reads it too. Claude Code then asks before running a script as ADMIN, or before reading an ADMIN password.
+
+```json
+{
+  "permissions": {
+    "ask": [
+      "Bash(bin/run-sql.sh --env admin *)",
+      "Bash(./bin/run-sql.sh --env admin *)",
+      "Bash(road-secrets get *ADMIN)",
+      "Bash(road-secrets copy *ADMIN)",
+      "Bash(*/road-secrets get *ADMIN)",
+      "Bash(*/road-secrets copy *ADMIN)"
+    ]
+  }
+}
+```
+
+These rules are a prompt, not a security boundary. The same program can be called in forms they do not match.
+
 ## Testing
 
 Offline tests do not require Oracle Database:
@@ -191,6 +246,12 @@ make test
 ```
 
 This runs shell syntax checks, ShellCheck when installed, SQLite schema creation, fixture log rebuild, and basic runner validation paths.
+
+road-secrets unit tests, which need Swift but no database or Keychain:
+
+```bash
+make road-secrets-test
+```
 
 Live smoke test:
 

@@ -51,6 +51,20 @@ After install, ask the user to configure `config/connections.conf` unless it alr
    - SQLite history record when available
 9. Do not repeat a previously failed approach unless the new attempt explains why it differs.
 
+## Passwords
+
+When a script or test needs a dev or test password, get it with `road-secrets get <key>`. Pass it on through standard input or an environment variable.
+
+- Never echo a password.
+- Never write one to a file in a repository.
+- Never ask the user for one.
+- Never create or change an entry for `prod`.
+- Always call the tool as `road-secrets`, never by its full path.
+- Always write keys exactly as `road-secrets list` prints them.
+- Always write `--env` as the first argument to `bin/run-sql.sh`. The user's approval rules for ADMIN work depend on it.
+
+If `road-secrets` is not installed, tell the user about `bin/install-road-secrets.sh` in the sql-runner repository. Do not install it into a project.
+
 ## INTENT Block
 
 Use this shape:
