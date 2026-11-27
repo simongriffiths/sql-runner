@@ -23,8 +23,7 @@ let dependencies = Dependencies(
         board.clearContents()
         return board.setString(value, forType: .string)
     },
-    isLocalEnvIgnored: Dependencies.gitIgnored(runner: runner),
-    gitRoot: Dependencies.gitRoot(runner: runner)
+    isLocalEnvIgnored: Dependencies.gitIgnored(runner: runner)
 )
 
 exit(App(dependencies).main(Array(CommandLine.arguments.dropFirst())))

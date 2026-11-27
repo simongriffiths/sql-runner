@@ -6,8 +6,9 @@ public protocol Terminal {
     /// True when standard input is a terminal.
     var isInteractive: Bool { get }
     func confirm(_ question: String) -> Bool
-    /// Reads a secret with echo off. Nil if none was entered.
-    func readSecret(_ prompt: String) -> String?
+    /// Reads one line from standard input with no prompt, and with echo off when standard input
+    /// is a terminal, so a password can be piped in. Nil if standard input is empty.
+    func readStandardInputSecret() -> String?
 }
 
 public struct SystemTerminal: Terminal {
@@ -21,12 +22,15 @@ public struct SystemTerminal: Terminal {
         return ["y", "yes"].contains(answer.trimmingCharacters(in: .whitespaces).lowercased())
     }
 
-    public func readSecret(_ prompt: String) -> String? {
-        var buffer = [CChar](repeating: 0, count: 512)
-        guard let result = readpassphrase(prompt, &buffer, buffer.count, RPP_REQUIRE_TTY) else { return nil }
-        let value = String(cString: result)
-        // Overwrite the buffer once copied.
-        for i in buffer.indices { buffer[i] = 0 }
-        return value.isEmpty ? nil : value
+    public func readStandardInputSecret() -> String? {
+        if isInteractive {
+            var buffer = [CChar](repeating: 0, count: 512)
+            guard let result = readpassphrase("", &buffer, buffer.count, RPP_REQUIRE_TTY) else { return nil }
+            let value = String(cString: result)
+            for i in buffer.indices { buffer[i] = 0 }
+            return value.isEmpty ? nil : value
+        }
+        guard let line = readLine(strippingNewline: true), !line.isEmpty else { return nil }
+        return line
     }
 }

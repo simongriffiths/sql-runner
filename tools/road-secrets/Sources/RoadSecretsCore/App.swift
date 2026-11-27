@@ -16,14 +16,11 @@ public struct Dependencies {
     public var copyToClipboard: (String) -> Bool
     /// True if git ignores `config/local.env` in this project.
     public var isLocalEnvIgnored: (URL) -> Bool
-    /// The root of the git repository containing a directory.
-    public var gitRoot: (URL) -> URL?
 
     public init(store: SecretStore, runner: ProcessRunning, terminal: Terminal, login: LoginChecking,
                 generator: PasswordGenerator, environment: [String: String], home: URL, currentDirectory: URL,
                 now: @escaping () -> Date, out: @escaping (String) -> Void, err: @escaping (String) -> Void,
-                copyToClipboard: @escaping (String) -> Bool, isLocalEnvIgnored: @escaping (URL) -> Bool,
-                gitRoot: @escaping (URL) -> URL?) {
+                copyToClipboard: @escaping (String) -> Bool, isLocalEnvIgnored: @escaping (URL) -> Bool) {
         self.store = store
         self.runner = runner
         self.terminal = terminal
@@ -37,7 +34,6 @@ public struct Dependencies {
         self.err = err
         self.copyToClipboard = copyToClipboard
         self.isLocalEnvIgnored = isLocalEnvIgnored
-        self.gitRoot = gitRoot
     }
 
     /// git, run through the given runner. Arguments carry paths only.
@@ -46,16 +42,6 @@ public struct Dependencies {
             let r = try? runner.run("/usr/bin/git", ["-C", project.path, "check-ignore", "-q", "config/local.env"],
                                     stdin: "", environment: nil, directory: nil)
             return r?.status == 0
-        }
-    }
-
-    public static func gitRoot(runner: ProcessRunning) -> (URL) -> URL? {
-        { dir in
-            guard let r = try? runner.run("/usr/bin/git", ["-C", dir.path, "rev-parse", "--show-toplevel"],
-                                          stdin: "", environment: nil, directory: nil),
-                  r.status == 0 else { return nil }
-            let path = r.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            return path.isEmpty ? nil : URL(fileURLWithPath: path)
         }
     }
 }
@@ -95,18 +81,29 @@ public final class App {
     public static let usage = """
         usage: road-secrets <command> [arguments]
 
-          init                          check that the tool can use the login keychain
-          list [prefix] [--all]         list keys; never shows passwords
-          set <key> [options]           generate a new password and apply it everywhere
-          sync <key>                    push the Keychain password into every copy
-          get <key>                     print the password
-          copy <key>                    put the password on the clipboard
-          check <key>                   prove the stored password works
-          delete <key> [--yes]          remove the entry
+          init                    check that the tool can use the login keychain
+          list [prefix] [--all]   list keys; never shows passwords
+          add --app <app> --env <env> --kind db|principal --name <NAME> [details]
+                                  create a new entry and set its first password
+          set <key>               generate a new password and apply it everywhere
+          sync <key>              push the Keychain password into every copy
+          get <key>               print the password
+          copy <key>              put the password on the clipboard
+          check <key>             prove the stored password works
+          delete <key> [--yes]    remove the entry
 
-        Keys look like road/<app>/<env>/<db|principal>/<NAME>.
-        set options for db keys:        --connection <name> --wallet <zip|dir> --tns <name> --via-admin --yes
-        set options for principal keys: --project <path> --ords-url <url>
+        <key> is written exactly as list prints it: road/<app>/<env>/<db|principal>/<NAME>.
+
+        add details for db:         --connection <name> --wallet <zip|dir> --tns <name>
+                                    [--via-admin] [--yes]
+                                    Without --via-admin, the current password is read from
+                                    standard input, with no prompt and no echo.
+        add details for principal:  [--project <path>] [--ords-url <url>]
+
+        Optional on existing keys:  set --via-admin, set --yes (several connections),
+                                    set/sync/check --project <path> (principal keys)
+        The project folder defaults to the stored one, else $ROAD_PROJECTS/<app>,
+        else ~/Projects/<app>.
         """
 
     public init(_ dependencies: Dependencies) {
@@ -138,19 +135,30 @@ public final class App {
             let a = try Arguments(rest, flags: ["all"], values: [])
             guard a.positionals.count <= 1 else { throw RoadError(.usage, "list takes at most one prefix") }
             try list(prefix: a.positionals.first, all: a.flags.contains("all"))
-        case "set":
+        case "add":
             let a = try Arguments(rest, flags: ["via-admin", "yes"],
-                                  values: ["connection", "wallet", "tns", "project", "ords-url"])
+                                  values: ["app", "env", "kind", "name", "connection", "wallet", "tns",
+                                           "project", "ords-url"])
+            try add(a)
+        case "set":
+            let a = try Arguments(rest, flags: ["via-admin", "yes"], values: ["project"])
             let key = try oneKey(a)
             switch key.kind {
-            case .db: try setDb(key, a)
-            case .principal: try setPrincipal(key, a)
+            case .db:
+                guard a.values["project"] == nil else { throw RoadError(.usage, "--project is only for principal keys") }
+                try setDb(key, viaAdmin: a.flags.contains("via-admin"), yes: a.flags.contains("yes"))
+            case .principal:
+                guard a.flags.isEmpty else { throw RoadError(.usage, "--via-admin and --yes are only for db keys") }
+                try setPrincipal(key, projectOverride: a.values["project"])
             }
         case "sync":
-            let key = try oneKey(try Arguments(rest, flags: [], values: []))
+            let a = try Arguments(rest, flags: [], values: ["project"])
+            let key = try oneKey(a)
             switch key.kind {
-            case .db: try syncDb(key)
-            case .principal: try syncPrincipal(key)
+            case .db:
+                guard a.values["project"] == nil else { throw RoadError(.usage, "--project is only for principal keys") }
+                try syncDb(key)
+            case .principal: try syncPrincipal(key, projectOverride: a.values["project"])
             }
         case "get":
             let key = try oneKey(try Arguments(rest, flags: [], values: []))
@@ -160,10 +168,13 @@ public final class App {
             guard d.copyToClipboard(try password(key)) else { throw RoadError(.external, "could not write to the clipboard") }
             d.err("copied \(key)")
         case "check":
-            let key = try oneKey(try Arguments(rest, flags: [], values: []))
+            let a = try Arguments(rest, flags: [], values: ["project"])
+            let key = try oneKey(a)
             switch key.kind {
-            case .db: try checkDb(key)
-            case .principal: try checkPrincipal(key)
+            case .db:
+                guard a.values["project"] == nil else { throw RoadError(.usage, "--project is only for principal keys") }
+                try checkDb(key)
+            case .principal: try checkPrincipal(key, projectOverride: a.values["project"])
             }
         case "delete":
             let a = try Arguments(rest, flags: ["yes"], values: [])
@@ -176,8 +187,66 @@ public final class App {
     }
 
     func oneKey(_ a: Arguments) throws -> Key {
-        guard a.positionals.count == 1 else { throw RoadError(.usage, "expected exactly one key") }
+        guard a.positionals.count == 1 else {
+            throw RoadError(.usage, "expected exactly one key, written as list prints it: road/<app>/<env>/<kind>/<NAME>")
+        }
         return try Key.parse(a.positionals[0])
+    }
+
+    /// The entry's attributes, or exit 3 pointing to `add`.
+    func existing(_ key: Key) throws -> ItemAttributes {
+        guard let attributes = try d.store.attributes(service: key.service, account: key.account) else {
+            throw RoadError(.notFound, "no entry for \(key). Create it with: road-secrets add --app \(key.app) --env \(key.env) --kind \(key.kind.rawValue) --name \(key.name) ...")
+        }
+        return attributes
+    }
+
+    // MARK: add
+
+    /// `add`: builds the key from named parts, refuses an existing one, and does the first set.
+    /// It never asks a question.
+    func add(_ a: Arguments) throws {
+        guard a.positionals.isEmpty else {
+            throw RoadError(.usage, "add takes no key: give --app, --env, --kind and --name")
+        }
+        let missing = ["app", "env", "kind", "name"].filter { a.values[$0] == nil }.map { "--\($0)" }
+        guard missing.isEmpty, let app = a.values["app"], let env = a.values["env"],
+              let kindText = a.values["kind"], let name = a.values["name"] else {
+            throw RoadError(.usage, "add needs \(missing.joined(separator: ", "))")
+        }
+        guard let kind = Kind(rawValue: kindText) else {
+            throw RoadError(.usage, "--kind must be db or principal")
+        }
+        let key = try Key.parse("road/\(app)/\(env)/\(kind.rawValue)/\(name)")
+        if try d.store.attributes(service: key.service, account: key.account) != nil {
+            throw RoadError(.usage, "\(key) already exists. To change its password, run: road-secrets set \(key)")
+        }
+        switch kind {
+        case .db:
+            let wrong = ["project", "ords-url"].filter { a.values[$0] != nil }
+            guard wrong.isEmpty else { throw RoadError(.usage, "--project and --ords-url are only for principal keys") }
+            let atlas = try loadAtlas()
+            let target = try resolveDb(key, a.values, atlas: atlas)
+            var old: String?
+            let viaAdmin = a.flags.contains("via-admin")
+            if !viaAdmin {
+                guard let typed = d.terminal.readStandardInputSecret() else {
+                    throw RoadError(.usage,
+                        "no current password on standard input for \(key.name). Pipe it in, or use --via-admin.")
+                }
+                old = typed
+            }
+            try changeDb(key, target: target, atlas: atlas, viaAdmin: viaAdmin, yes: a.flags.contains("yes"),
+                         interactive: false, old: old, existing: nil)
+        case .principal:
+            let wrong = ["connection", "wallet", "tns"].filter { a.values[$0] != nil }
+            guard wrong.isEmpty, a.flags.isEmpty else {
+                throw RoadError(.usage, "--connection, --wallet, --tns, --via-admin and --yes are only for db keys")
+            }
+            let project = projectFor(key, override: a.values["project"], meta: nil)
+            try changePrincipal(key, project: project, ords: a.values["ords-url"], existing: nil)
+        }
+        d.out(key.description)
     }
 
     // MARK: Store helpers
@@ -269,16 +338,19 @@ public final class App {
     }
 
     /// Section 7.3, step 1.
-    func resolveDb(_ key: Key, _ a: Arguments?, atlas: Atlas) throws -> DbTarget {
+    func resolveDb(_ key: Key, _ values: [String: String]?, atlas: Atlas) throws -> DbTarget {
         let existing = try d.store.attributes(service: key.service, account: key.account)
         let meta = Meta.decode(DbMeta.self, existing?.generic)
-        let connection = a?.values["connection"] ?? meta?.connection ?? meta?.sqlcl_connections.first
-        let wallet = a?.values["wallet"] ?? meta?.wallet
-        let tns = a?.values["tns"] ?? meta?.tns
+        let connection = values?["connection"] ?? meta?.connection ?? meta?.sqlcl_connections.first
+        let wallet = values?["wallet"] ?? meta?.wallet
+        let tns = values?["tns"] ?? meta?.tns
         let missing = [("--connection", connection), ("--wallet", wallet), ("--tns", tns)]
             .filter { $0.1 == nil }.map(\.0)
         guard missing.isEmpty, let connection, let wallet, let tns else {
-            throw RoadError(.usage, "\(key) has no stored details yet: give \(missing.joined(separator: ", "))")
+            if values == nil {
+                throw RoadError(.usage, "\(key) has no stored connection details. Delete it and add it again.")
+            }
+            throw RoadError(.usage, "add for a db key needs \(missing.joined(separator: ", "))")
         }
         guard WalletZip.exists(wallet) else { throw RoadError(.usage, "wallet not found: \(wallet)") }
         guard WalletZip.defines(try WalletZip.tnsnames(wallet, runner: d.runner), alias: tns) else {
@@ -300,10 +372,20 @@ public final class App {
         return found
     }
 
-    func setDb(_ key: Key, _ a: Arguments) throws {
-        let viaAdmin = a.flags.contains("via-admin")
+    /// `set` for an existing db key: everything comes from the entry.
+    func setDb(_ key: Key, viaAdmin: Bool, yes: Bool) throws {
+        let attributes = try existing(key)
         let atlas = try loadAtlas()
-        let target = try resolveDb(key, a, atlas: atlas)
+        let target = try resolveDb(key, nil, atlas: atlas)
+        let old = viaAdmin ? nil : try password(key)
+        try changeDb(key, target: target, atlas: atlas, viaAdmin: viaAdmin, yes: yes,
+                     interactive: d.terminal.isInteractive, old: old, existing: attributes)
+    }
+
+    /// Section 7.3, steps 2 to 10. `old` is the current password, unless `viaAdmin`.
+    /// `existing` is the current entry, or nil when `add` creates it.
+    func changeDb(_ key: Key, target: DbTarget, atlas: Atlas, viaAdmin: Bool, yes: Bool, interactive: Bool,
+                  old: String?, existing: ItemAttributes?) throws {
         let sql = try sqlcl()
 
         // Step 2.
@@ -315,7 +397,7 @@ public final class App {
         // Step 3.
         if key.isAdmin {
             guard key.app == target.db else {
-                throw RoadError(.usage, "an ADMIN key must use the database name as its app: road/\(target.db)/\(key.env)/db/ADMIN")
+                throw RoadError(.usage, "an ADMIN key must use the database name as its app: --app \(target.db)")
             }
             guard !viaAdmin else { throw RoadError(.usage, "--via-admin cannot be used on the ADMIN entry itself") }
         }
@@ -323,35 +405,20 @@ public final class App {
 
         // Step 4.
         let found = try discover(key, db: target.db, atlas: atlas, sql: sql)
-        d.out("\(found.count) saved connection(s) log in as \(key.name) on \(target.db): \(found.map(\.name).joined(separator: ", "))")
-        if found.count > 1 && !a.flags.contains("yes") {
-            guard d.terminal.isInteractive else {
-                throw RoadError(.usage, "\(found.count) connections would be re-saved and standard input is not a terminal: pass --yes")
+        d.err("\(found.count) saved connection(s) log in as \(key.name) on \(target.db): \(found.map(\.name).joined(separator: ", "))")
+        if found.count > 1 && !yes {
+            guard interactive else {
+                throw RoadError(.usage, "\(found.count) connections would be re-saved: pass --yes")
             }
             guard d.terminal.confirm("Change the password and re-save all \(found.count)?") else {
                 throw RoadError(.usage, "nothing changed")
             }
         }
 
-        // Step 5: the old password, or ADMIN.
-        let existing = try d.store.attributes(service: key.service, account: key.account)
-        let current = try d.store.read(service: key.service, account: key.account)
-        var old: String?
-        var admin: (password: String, meta: DbMeta)?
-        if viaAdmin {
-            admin = try adminEntry(db: target.db)
-        } else if let current {
-            old = current
-        } else {
-            guard d.terminal.isInteractive else {
-                throw RoadError(.usage,
-                    "\(key) has no entry yet and standard input is not a terminal. Adopt it at a terminal by typing its current password, or use --via-admin.")
-            }
-            guard let typed = d.terminal.readSecret("Current password for \(key.name) on \(target.db): ") else {
-                throw RoadError(.usage, "no password entered")
-            }
-            old = typed
-        }
+        // Step 5: ADMIN, when asked for.
+        let current = existing == nil ? nil : try d.store.read(service: key.service, account: key.account)
+        let admin = viaAdmin ? try adminEntry(db: target.db) : nil
+        guard viaAdmin || old != nil else { throw RoadError(.usage, "no current password for \(key.name)") }
 
         let zip = try WalletZip.prepare(target.wallet, runner: d.runner)
         defer { zip.remove() }
@@ -361,7 +428,7 @@ public final class App {
         // Step 6: store the new value first.
         let new = d.generator.generate(avoiding: [key.name])
         if let current, let existing { try keepPrevious(key, value: current, attributes: existing) }
-        var meta = DbMeta(set_at: Clock.iso8601(d.now()), db: target.db, sqlcl_connections: found.map(\.name),
+        let meta = DbMeta(set_at: Clock.iso8601(d.now()), db: target.db, sqlcl_connections: found.map(\.name),
                           wallet: target.wallet, tns: target.tns, connection: target.connection)
         try d.store.write(service: key.service, account: key.account, password: new, label: key.label,
                           comment: comment(), generic: Meta.encode(meta))
@@ -391,13 +458,12 @@ public final class App {
         // Step 9.
         let failed = try resave(found, password: new, zip: zip.path, sql: sql, secrets: secrets)
         if !failed.isEmpty {
-            meta.sqlcl_connections = found.map(\.name)
             throw RoadError(.external,
                 "the database and the Keychain have the new password, but these connections were not re-saved: \(failed.joined(separator: ", ")). Run: road-secrets sync \(key)")
         }
 
         // Step 10.
-        d.out("road-secrets: set \(key). Re-saved \(found.count) connection(s).")
+        d.err("road-secrets: set \(key). Re-saved \(found.count) connection(s).")
     }
 
     /// The single ADMIN entry for a database (Section 5.5).
@@ -446,6 +512,7 @@ public final class App {
     }
 
     func syncDb(_ key: Key) throws {
+        _ = try existing(key)
         let value = try password(key)
         let atlas = try loadAtlas()
         let target = try resolveDb(key, nil, atlas: atlas)
@@ -466,6 +533,7 @@ public final class App {
     }
 
     func checkDb(_ key: Key) throws {
+        _ = try existing(key)
         let value = try password(key)
         let atlas = try loadAtlas()
         let target = try resolveDb(key, nil, atlas: atlas)
@@ -493,38 +561,45 @@ public final class App {
 
     // MARK: principal keys
 
-    func setPrincipal(_ key: Key, _ a: Arguments) throws {
-        let existing = try d.store.attributes(service: key.service, account: key.account)
-        let meta = Meta.decode(PrincipalMeta.self, existing?.generic)
-        let project: URL
-        if let path = a.values["project"] {
-            project = URL(fileURLWithPath: path).standardizedFileURL
-        } else if let path = meta?.project {
-            project = URL(fileURLWithPath: path)
-        } else if let root = d.gitRoot(d.currentDirectory) {
-            project = root
-        } else {
-            throw RoadError(.usage, "give --project: the current directory is not in a git repository")
+    /// The project folder for a principal key: `--project`, else the stored one, else
+    /// `$ROAD_PROJECTS/<app>`, else `~/Projects/<app>`. Works from any folder.
+    func projectFor(_ key: Key, override: String?, meta: PrincipalMeta?) -> URL {
+        if let override { return URL(fileURLWithPath: override).standardizedFileURL }
+        if let stored = meta?.project { return URL(fileURLWithPath: stored) }
+        if let base = d.environment["ROAD_PROJECTS"], !base.isEmpty {
+            return URL(fileURLWithPath: base).appendingPathComponent(key.app)
         }
+        return d.home.appendingPathComponent("Projects").appendingPathComponent(key.app)
+    }
 
+    /// `set` for an existing principal key.
+    func setPrincipal(_ key: Key, projectOverride: String?) throws {
+        let attributes = try existing(key)
+        let meta = Meta.decode(PrincipalMeta.self, attributes.generic)
+        try changePrincipal(key, project: projectFor(key, override: projectOverride, meta: meta),
+                            ords: meta?.ords_url, existing: attributes)
+    }
+
+    /// Section 7.4. `existing` is the current entry, or nil when `add` creates it.
+    func changePrincipal(_ key: Key, project: URL, ords givenOrds: String?, existing: ItemAttributes?) throws {
         // Step 1.
         guard project.lastPathComponent == key.app else {
             throw RoadError(.usage, "the project \(project.path) is not \(key.app)")
         }
         let script = project.appendingPathComponent("bin/set-principal-password.sh")
         guard FileManager.default.isExecutableFile(atPath: script.path) else {
-            throw RoadError(.usage, "\(script.path) not found")
+            throw RoadError(.usage, "\(script.path) not found. Give --project if the app is somewhere else.")
         }
 
         // Step 2: Key.parse already refuses env prod.
         try ProdGuard.check(key: key, db: nil, connections: [], atlas: Atlas())
-        let ords = a.values["ords-url"] ?? meta?.ords_url ?? (try? loadAtlas())?.ordsBase(app: key.app, env: key.env)
+        let ords = givenOrds ?? (try? loadAtlas())?.ordsBase(app: key.app, env: key.env)
 
         // Step 3.
         d.err("warning: every live session for principal \(key.name) in \(key.app) \(key.env) will end.")
 
         // Step 4.
-        let current = try d.store.read(service: key.service, account: key.account)
+        let current = existing == nil ? nil : try d.store.read(service: key.service, account: key.account)
         if let current, let existing { try keepPrevious(key, value: current, attributes: existing) }
         let new = d.generator.generate(avoiding: [key.name])
         let newMeta = PrincipalMeta(set_at: Clock.iso8601(d.now()), project: project.path, ords_url: ords)
@@ -546,7 +621,7 @@ public final class App {
         let note = try updateLocalEnv(key, project: project, password: new)
 
         // Step 8.
-        d.out("road-secrets: set \(key). \(note)")
+        d.err("road-secrets: set \(key). \(note)")
     }
 
     /// Section 7.11. Returns a one-line description of what happened.
@@ -569,23 +644,24 @@ public final class App {
         }
     }
 
-    func syncPrincipal(_ key: Key) throws {
+    func syncPrincipal(_ key: Key, projectOverride: String?) throws {
+        let attributes = try existing(key)
         let value = try password(key)
-        let attrs = try d.store.attributes(service: key.service, account: key.account)
-        guard let meta = Meta.decode(PrincipalMeta.self, attrs?.generic) else {
-            throw RoadError(.usage, "\(key) has no stored project. Run set first.")
-        }
-        d.out("road-secrets: \(try updateLocalEnv(key, project: URL(fileURLWithPath: meta.project), password: value))")
+        let project = projectFor(key, override: projectOverride,
+                                 meta: Meta.decode(PrincipalMeta.self, attributes.generic))
+        d.out("road-secrets: \(try updateLocalEnv(key, project: project, password: value))")
     }
 
-    func checkPrincipal(_ key: Key) throws {
+    func checkPrincipal(_ key: Key, projectOverride: String?) throws {
+        let attributes = try existing(key)
         let value = try password(key)
-        let attrs = try d.store.attributes(service: key.service, account: key.account)
-        let meta = Meta.decode(PrincipalMeta.self, attrs?.generic)
+        let meta = Meta.decode(PrincipalMeta.self, attributes.generic)
+        let projectPath = projectFor(key, override: projectOverride, meta: meta).path
         var problems: [String] = []
 
         // 1. The login endpoint.
-        if let base = meta?.ords_url, let project = meta?.project {
+        if let base = meta?.ords_url {
+            let project = projectPath
             let config = (try? String(contentsOfFile: "\(project)/road.config", encoding: .utf8)) ?? ""
             guard let apiBase = LocalEnv.value(of: "API_BASE_PATH", in: config), !apiBase.isEmpty else {
                 throw RoadError(.external, "API_BASE_PATH not found in \(project)/road.config")
@@ -612,8 +688,8 @@ public final class App {
         }
 
         // 2. config/local.env.
-        if let project = meta?.project {
-            let file = "\(project)/config/local.env"
+        do {
+            let file = "\(projectPath)/config/local.env"
             if let text = try? String(contentsOfFile: file, encoding: .utf8), LocalEnv.testPrincipal(text) == key.name {
                 if LocalEnv.value(of: "ROAD_TEST_PASSWORD", in: text) == value {
                     d.out("ok: config/local.env matches the Keychain")

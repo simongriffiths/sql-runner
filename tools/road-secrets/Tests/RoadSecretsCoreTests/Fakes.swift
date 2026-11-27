@@ -95,9 +95,14 @@ final class FakeRunner: ProcessRunning {
 final class FakeTerminal: Terminal {
     var isInteractive = false
     var answers: [Bool] = []
-    var secret: String?
+    /// What standard input holds for `add`'s current-password read.
+    var stdin: String?
+    var stdinReads = 0
     func confirm(_ question: String) -> Bool { answers.isEmpty ? false : answers.removeFirst() }
-    func readSecret(_ prompt: String) -> String? { secret }
+    func readStandardInputSecret() -> String? {
+        stdinReads += 1
+        return stdin
+    }
 }
 
 final class FakeLogin: LoginChecking {
@@ -134,6 +139,12 @@ final class Harness {
     var err: [String] = []
     var ignored = true
     var clipboard: String?
+    /// Environment for the App; ROAD_PROJECTS points at root, where the road-kit project is.
+    lazy var environment: [String: String] = [
+        "ROAD_ATLAS": root.appendingPathComponent("atlas").path,
+        "PATH": root.appendingPathComponent("bin").path,
+        "ROAD_PROJECTS": root.path,
+    ]
 
     static let databases = """
         # comment
@@ -186,14 +197,12 @@ final class Harness {
         App(Dependencies(
             store: store, runner: runner, terminal: terminal, login: login,
             generator: PasswordGenerator(random: random),
-            environment: ["ROAD_ATLAS": root.appendingPathComponent("atlas").path,
-                          "PATH": root.appendingPathComponent("bin").path],
-            home: root, currentDirectory: project, now: { Date(timeIntervalSince1970: 1_795_000_000) },
+            environment: environment,
+            home: root, currentDirectory: URL(fileURLWithPath: "/"), now: { Date(timeIntervalSince1970: 1_795_000_000) },
             out: { [unowned self] in self.out.append($0) },
             err: { [unowned self] in self.err.append($0) },
             copyToClipboard: { [unowned self] in self.clipboard = $0; return true },
-            isLocalEnvIgnored: { [unowned self] _ in self.ignored },
-            gitRoot: { [unowned self] _ in self.project }))
+            isLocalEnvIgnored: { [unowned self] _ in self.ignored }))
     }
 
     @discardableResult

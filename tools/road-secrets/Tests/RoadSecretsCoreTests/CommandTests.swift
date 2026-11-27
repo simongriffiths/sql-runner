@@ -69,76 +69,92 @@ import Testing
         return h
     }
 
-    func adoptAdmin(_ h: Harness) throws {
-        h.terminal.isInteractive = true
-        h.terminal.secret = "Admin.Pass.001"
-        let code = h.run("set road/roadkitdb/dev/db/ADMIN --connection roadkit_admin --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium")
-        #expect(code == 0, "\(h.err)")
-        h.terminal.isInteractive = false
-        h.terminal.secret = nil
+    func details(_ h: Harness, _ connection: String, db: String = "roadkitdb", tns: String = "roadkitdb_medium") -> String {
+        "--connection \(connection) --wallet \(h.wallet(db)) --tns \(tns)"
     }
 
-    @Test func adoptsAdminByTypingItsPasswordThenRotates() throws {
+    func addAdmin(_ h: Harness) throws {
+        h.terminal.stdin = "Admin.Pass.001"
+        h.out = []
+        let code = h.run("add --app roadkitdb --env dev --kind db --name ADMIN \(details(h, "roadkit_admin"))")
+        #expect(code == 0, "\(h.err)")
+        #expect(h.out == ["road/roadkitdb/dev/db/ADMIN"])
+        h.terminal.stdin = nil
+    }
+
+    @Test func addAdoptsAdminFromStandardInputThenSetRotates() throws {
         let h = try harness()
-        try adoptAdmin(h)
+        try addAdmin(h)
+        #expect(h.terminal.stdinReads == 1)
         let stored = try #require(try h.store.read(service: "road/roadkitdb/dev/db", account: "ADMIN"))
         #expect(stored != "Admin.Pass.001")
         #expect(h.runner.passwords["ADMIN"] == stored)
-        // roadkit_admin was re-saved with the new password.
         let script = h.runner.sqlScripts.first { $0.contains("-save roadkit_admin") }
         #expect(script?.contains("-replace ADMIN/\"\(stored)\"@roadkitdb_medium") == true)
         #expect(!h.printed.contains(stored) && !h.printed.contains("Admin.Pass.001"))
-        #expect(try h.store.read(service: "road-previous/roadkitdb/dev/db", account: "ADMIN") == nil)
-        // Self-change used the old password with replace.
         #expect(h.runner.sqlScripts.contains { $0.contains("replace \"Admin.Pass.001\"") })
 
-        // A second set rotates without a prompt, as a self-change.
-        #expect(h.run("set road/roadkitdb/dev/db/ADMIN") == 0)
+        // set takes only the key, from any folder, and reads nothing from standard input.
+        #expect(h.run("set road/roadkitdb/dev/db/ADMIN") == 0, "\(h.err)")
+        #expect(h.terminal.stdinReads == 1)
         let rotated = try #require(try h.store.read(service: "road/roadkitdb/dev/db", account: "ADMIN"))
         #expect(rotated != stored && h.runner.passwords["ADMIN"] == rotated)
         #expect(h.run("check road/roadkitdb/dev/db/ADMIN") == 0)
+        #expect(h.run("sync road/roadkitdb/dev/db/ADMIN") == 0)
     }
 
-    @Test func viaAdminReSavesEveryProxyConnectionOnTheDatabase() throws {
+    @Test func addViaAdminReSavesEveryProxyConnectionOnTheDatabase() throws {
         let h = try harness()
-        try adoptAdmin(h)
-        // Two connections: needs --yes when not a terminal.
-        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY --via-admin --connection livehub_a --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 2)
+        try addAdmin(h)
+        // Two connections: add never asks, so --yes is required.
+        #expect(h.run("add --app livehub --env dev --kind db --name LIVEHUB_DEPLOY --via-admin \(details(h, "livehub_a"))") == 2)
         #expect(h.runner.passwords["LIVEHUB_DEPLOY"] == "Old.Pass.002")
-        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY --via-admin --yes --connection livehub_a --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 0)
+        #expect(try h.store.read(service: "road/livehub/dev/db", account: "LIVEHUB_DEPLOY") == nil)
+        #expect(h.run("add --app livehub --env dev --kind db --name LIVEHUB_DEPLOY --via-admin --yes \(details(h, "livehub_a"))") == 0)
+        #expect(h.terminal.stdinReads == 1)  // --via-admin reads nothing
         let pw = try #require(try h.store.read(service: "road/livehub/dev/db", account: "LIVEHUB_DEPLOY"))
         #expect(h.runner.passwords["LIVEHUB_DEPLOY"] == pw)
-        // Both roadkitdb connections re-saved with their proxy schemas; quoratedb's untouched.
         let all = h.runner.sqlScripts.joined(separator: "\n")
         #expect(all.contains("-save livehub_a -savepwd -replace livehub_deploy[a_hub]/\"\(pw)\"@roadkitdb_medium"))
         #expect(all.contains("-save livehub_b -savepwd -replace livehub_deploy[b_hub]/\"\(pw)\"@roadkitdb_high"))
         #expect(!all.contains("-save livehub_q"))
-        #expect(h.out.contains { $0.contains("Re-saved 2 connection(s)") })
+        #expect(h.err.contains { $0.contains("Re-saved 2 connection(s)") })
         let meta = Meta.decode(DbMeta.self, try h.store.attributes(service: "road/livehub/dev/db", account: "LIVEHUB_DEPLOY")?.generic)
         #expect(meta?.sqlcl_connections == ["livehub_a", "livehub_b"])
+        #expect(meta?.connection == "livehub_a")
         #expect(!h.printed.contains(pw))
         #expect(h.run("check road/livehub/dev/db/LIVEHUB_DEPLOY") == 0)
+        // set on several connections still needs --yes when not at a terminal.
+        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY") == 2)
+        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY --yes") == 0)
+        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY --yes --via-admin") == 0)
     }
 
     @Test func failedChangeRestoresTheEntry() throws {
         let h = try harness()
-        try adoptAdmin(h)
+        try addAdmin(h)
         let adminPw = try h.store.read(service: "road/roadkitdb/dev/db", account: "ADMIN")
-        h.runner.passwords["ADMIN"] = "Changed.Elsewhere.003"   // the stored ADMIN password is now wrong
-        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY --via-admin --yes --connection livehub_a --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 5)
+        h.runner.passwords["ADMIN"] = "Changed.Elsewhere.003"
+        #expect(h.run("add --app livehub --env dev --kind db --name LIVEHUB_DEPLOY --via-admin --yes \(details(h, "livehub_a"))") == 5)
         #expect(try h.store.read(service: "road/livehub/dev/db", account: "LIVEHUB_DEPLOY") == nil)
         #expect(try h.store.read(service: "road-previous/livehub/dev/db", account: "LIVEHUB_DEPLOY") == nil)
         #expect(try h.store.read(service: "road/roadkitdb/dev/db", account: "ADMIN") == adminPw)
         #expect(h.runner.passwords["LIVEHUB_DEPLOY"] == "Old.Pass.002")
         #expect(!h.printed.contains(adminPw!))
         #expect(h.printed.contains("ORA-01017"))
+
+        // A failed set keeps the old entry.
+        h.runner.passwords["ADMIN"] = "Changed.Elsewhere.004"
+        #expect(h.run("set road/roadkitdb/dev/db/ADMIN") == 5)
+        #expect(try h.store.read(service: "road/roadkitdb/dev/db", account: "ADMIN") == adminPw)
+        #expect(try h.store.read(service: "road-previous/roadkitdb/dev/db", account: "ADMIN") == nil)
     }
 
     @Test func failedReSaveKeepsTheNewPasswordAndAsksForSync() throws {
         let h = try harness()
-        try adoptAdmin(h)
+        try addAdmin(h)
         h.runner.failSaving = ["livehub_b"]
-        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY --via-admin --yes --connection livehub_a --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 5)
+        #expect(h.run("add --app livehub --env dev --kind db --name LIVEHUB_DEPLOY --via-admin --yes \(details(h, "livehub_a"))") == 5)
         let pw = try #require(try h.store.read(service: "road/livehub/dev/db", account: "LIVEHUB_DEPLOY"))
         #expect(h.runner.passwords["LIVEHUB_DEPLOY"] == pw)
         #expect(h.err.contains { $0.contains("livehub_b") && $0.contains("road-secrets sync") })
@@ -148,49 +164,149 @@ import Testing
         #expect(h.out.contains { $0.contains("2 connection(s)") })
     }
 
-    @Test func notATerminalCannotAdopt() throws {
+    @Test func addWithEmptyStandardInputSuggestsViaAdmin() throws {
         let h = try harness()
-        #expect(h.run("set road/roadkitdb/dev/db/ADMIN --connection roadkit_admin --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 2)
+        #expect(h.run("add --app roadkitdb --env dev --kind db --name ADMIN \(details(h, "roadkit_admin"))") == 2)
+        #expect(h.err.last?.contains("--via-admin") == true)
         #expect(h.store.items.isEmpty)
     }
 
     @Test func productionAndNamingRefusals() throws {
         let h = try harness()
-        h.terminal.isInteractive = true
-        h.terminal.secret = "Admin.Pass.001"
-        // quoratedb serves production, so its ADMIN is refused with 6.
-        #expect(h.run("set road/quoratedb/dev/db/ADMIN --connection quorate_admin --wallet \(h.wallet("quoratedb")) --tns quoratedb_high") == 6)
-        // The schema of a prod env line is refused.
+        h.terminal.stdin = "Admin.Pass.001"
+        #expect(h.run("add --app quoratedb --env dev --kind db --name ADMIN \(details(h, "quorate_admin", db: "quoratedb", tns: "quoratedb_high"))") == 6)
         h.runner.passwords["ROAD_BLOGGER_FREE_DEV"] = "x"
-        #expect(h.run("set road/road-blogger/dev/db/ROAD_BLOGGER_FREE_DEV --connection road_blogger_free_dev --wallet \(h.wallet("quoratedb")) --tns quoratedb_high") == 6)
-        // An ADMIN key must be named after its database.
-        #expect(h.run("set road/road-kit/dev/db/ADMIN --connection roadkit_admin --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 2)
-        // The connection must log in as NAME.
-        #expect(h.run("set road/x/dev/db/LIVEHUB_DEPLOY --connection roadkit_admin --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 2)
-        // Missing options are named.
-        #expect(h.run("set road/x/dev/db/LIVEHUB_DEPLOY") == 2)
+        #expect(h.run("add --app road-blogger --env dev --kind db --name ROAD_BLOGGER_FREE_DEV \(details(h, "road_blogger_free_dev", db: "quoratedb", tns: "quoratedb_high"))") == 6)
+        #expect(h.run("add --app road-kit --env dev --kind db --name ADMIN \(details(h, "roadkit_admin"))") == 2)
+        #expect(h.err.last?.contains("--app roadkitdb") == true)
+        #expect(h.run("add --app x --env dev --kind db --name LIVEHUB_DEPLOY \(details(h, "roadkit_admin"))") == 2)
+        #expect(h.run("add --app x --env dev --kind db --name LIVEHUB_DEPLOY") == 2)
         #expect(h.err.last?.contains("--connection, --wallet, --tns") == true)
-        // A TNS name the wallet does not define.
-        #expect(h.run("set road/x/dev/db/LIVEHUB_DEPLOY --connection livehub_a --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_low") == 2)
-        // --via-admin with no ADMIN entry.
-        #expect(h.run("set road/x/dev/db/LIVEHUB_DEPLOY --via-admin --yes --connection livehub_a --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 2)
+        #expect(h.run("add --app x --env dev --kind db --name LIVEHUB_DEPLOY \(details(h, "livehub_a", tns: "roadkitdb_low"))") == 2)
+        #expect(h.run("add --app x --env dev --kind db --name LIVEHUB_DEPLOY --via-admin --yes \(details(h, "livehub_a"))") == 2)
         #expect(h.store.items.isEmpty)
         #expect(h.runner.passwords["ADMIN"] == "Admin.Pass.001")
     }
 
     @Test func unreadableAtlasRefuses() throws {
         let h = try harness()
+        h.terminal.stdin = "Admin.Pass.001"
         try FileManager.default.removeItem(at: h.root.appendingPathComponent("atlas/environments.conf"))
-        #expect(h.run("set road/roadkitdb/dev/db/ADMIN --connection roadkit_admin --wallet \(h.wallet("roadkitdb")) --tns roadkitdb_medium") == 6)
+        #expect(h.run("add --app roadkitdb --env dev --kind db --name ADMIN \(details(h, "roadkit_admin"))") == 6)
+    }
+}
+
+@Suite struct AddCommandTests {
+    @Test(arguments: [
+        ("add", 2),                                                       // nothing given
+        ("add --app road-kit --env dev --name ADMIN", 2),                 // --kind is required
+        ("add --app road-kit --env dev --kind table --name ADMIN", 2),    // unknown kind
+        ("add --app road-kit --env dev --kind principal --name admin", 2),// lowercase name
+        ("add --app Road-Kit --env dev --kind principal --name ADMIN", 2),// bad app
+        ("add --app road-kit --env prod --kind principal --name ADMIN", 6),
+        ("add road/road-kit/dev/principal/ADMIN", 2),                     // add takes no key
+        ("add --app road-kit --env dev --kind principal --name ADMIN --tns x_high", 2),
+        ("add --app road-kit --env dev --kind db --name X --project /tmp", 2),
+        ("add --app road-kit --env dev --kind principal --name ADMIN --bogus", 2),
+    ])
+    func validation(_ command: String, _ expected: Int32) throws {
+        let h = try Harness()
+        #expect(h.run(command) == expected, "\(h.err)")
+        #expect(h.store.items.isEmpty)
+        #expect(h.runner.calls.isEmpty)
+    }
+
+    @Test func refusesAnExistingKey() throws {
+        let h = try Harness()
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 0, "\(h.err)")
+        let first = try h.store.read(service: "road/road-kit/dev/principal", account: "ADMIN")
+        let calls = h.runner.calls.count
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 2)
+        #expect(h.err.last?.contains("road-secrets set road/road-kit/dev/principal/ADMIN") == true)
+        #expect(try h.store.read(service: "road/road-kit/dev/principal", account: "ADMIN") == first)
+        #expect(h.runner.calls.count == calls)
+    }
+
+    @Test(arguments: ["set", "sync", "check"])
+    func missingKeysPointToAdd(_ command: String) throws {
+        let h = try Harness()
+        #expect(h.run("\(command) road/road-kit/dev/principal/ADMIN") == 3)
+        #expect(h.err.last?.contains("road-secrets add --app road-kit --env dev --kind principal --name ADMIN") == true)
+        #expect(h.run("\(command) road/livehub/dev/db/LIVEHUB_DEPLOY") == 3)
+        #expect(h.err.last?.contains("--kind db") == true)
+    }
+
+    @Test func setTakesNoFirstTimeOptions() throws {
+        let h = try Harness()
+        for option in ["--connection x", "--wallet /x", "--tns x_high", "--ords-url https://x"] {
+            #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY \(option)") == 2)
+        }
+        #expect(h.run("set road/livehub/dev/db/LIVEHUB_DEPLOY --project /x") == 2)
+        #expect(h.run("set road/road-kit/dev/principal/ADMIN --via-admin") == 2)
+        #expect(h.run("get road/road-kit/dev/principal/ADMIN extra") == 2)
+    }
+}
+
+@Suite struct ProjectFolderTests {
+    func setUpProject(at folder: URL) throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: folder.appendingPathComponent("bin"), withIntermediateDirectories: true)
+        let script = folder.appendingPathComponent("bin/set-principal-password.sh")
+        try "#!/bin/sh\n".write(to: script, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: script.path)
+    }
+
+    func scriptDirectory(_ h: Harness) -> String? {
+        h.runner.calls.last { $0.executable.hasSuffix("set-principal-password.sh") }?.executable
+    }
+
+    @Test func defaultsToRoadProjects() throws {
+        let h = try Harness()
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 0)
+        #expect(scriptDirectory(h) == h.project.appendingPathComponent("bin/set-principal-password.sh").path)
+    }
+
+    @Test func defaultsToHomeProjectsWithoutRoadProjects() throws {
+        let h = try Harness()
+        h.environment["ROAD_PROJECTS"] = nil
+        let folder = h.root.appendingPathComponent("Projects/road-kit")
+        try setUpProject(at: folder)
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 0, "\(h.err)")
+        #expect(scriptDirectory(h) == folder.appendingPathComponent("bin/set-principal-password.sh").path)
+        let meta = Meta.decode(PrincipalMeta.self, try h.store.attributes(service: "road/road-kit/dev/principal", account: "ADMIN")?.generic)
+        #expect(meta?.project == folder.path)
+    }
+
+    @Test func storedProjectWinsOverTheDefaultAndOverrideWinsOverBoth() throws {
+        let h = try Harness()
+        let elsewhere = h.root.appendingPathComponent("elsewhere/road-kit")
+        try setUpProject(at: elsewhere)
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN --project \(elsewhere.path)") == 0)
+        #expect(h.run("set road/road-kit/dev/principal/ADMIN") == 0)
+        #expect(scriptDirectory(h) == elsewhere.appendingPathComponent("bin/set-principal-password.sh").path)
+        #expect(h.run("set road/road-kit/dev/principal/ADMIN --project \(h.project.path)") == 0)
+        #expect(scriptDirectory(h) == h.project.appendingPathComponent("bin/set-principal-password.sh").path)
+        // The override is stored for next time.
+        let meta = Meta.decode(PrincipalMeta.self, try h.store.attributes(service: "road/road-kit/dev/principal", account: "ADMIN")?.generic)
+        #expect(meta?.project == h.project.path)
+    }
+
+    @Test func aMissingProjectNamesTheFolderAndSuggestsProject() throws {
+        let h = try Harness()
+        h.environment["ROAD_PROJECTS"] = "/nonexistent"
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 2)
+        #expect(h.err.last?.contains("/nonexistent/road-kit") == true && h.err.last?.contains("--project") == true)
+        #expect(h.store.items.isEmpty)
     }
 }
 
 @Suite struct PrincipalCommandTests {
-    @Test func setWritesTwiceOnStdinThenUpdatesLocalEnv() throws {
+    @Test func addWritesTwiceOnStdinThenUpdatesLocalEnv() throws {
         let h = try Harness()
         let env = h.project.appendingPathComponent("config/local.env")
         try "export ROAD_ORDS_HOST=https://h\nexport ROAD_TEST_PASSWORD='old'\n".write(to: env, atomically: true, encoding: .utf8)
-        #expect(h.run("set road/road-kit/dev/principal/ADMIN") == 0, "\(h.err)")
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 0, "\(h.err)")
+        #expect(h.out == ["road/road-kit/dev/principal/ADMIN"])
         let pw = try #require(try h.store.read(service: "road/road-kit/dev/principal", account: "ADMIN"))
         let call = try #require(h.runner.calls.first { $0.executable.hasSuffix("set-principal-password.sh") })
         #expect(call.arguments == ["--env", "dev", "--subject", "ADMIN"])
@@ -207,37 +323,48 @@ import Testing
         #expect(h.login.calls.last?.absoluteString == "https://example-quoratedb.adb.uk-cardiff-1.oraclecloudapps.com/ords/hello_api/jwt-auth/login")
         #expect(h.out.contains("ok: config/local.env matches the Keychain"))
 
-        // local.env drifts: check fails, sync repairs it.
         try "export ROAD_TEST_PASSWORD='drift'\n".write(to: env, atomically: true, encoding: .utf8)
         #expect(h.run("check road/road-kit/dev/principal/ADMIN") == 5)
         #expect(h.run("sync road/road-kit/dev/principal/ADMIN") == 0)
         #expect(h.run("check road/road-kit/dev/principal/ADMIN") == 0)
 
+        // set rotates with only the key.
+        #expect(h.run("set road/road-kit/dev/principal/ADMIN") == 0)
+        let rotated = try #require(try h.store.read(service: "road/road-kit/dev/principal", account: "ADMIN"))
+        #expect(rotated != pw)
+        #expect(try String(contentsOf: env, encoding: .utf8).contains("'\(rotated)'"))
+
         h.login.status = 404
         #expect(h.run("check road/road-kit/dev/principal/ADMIN") == 5)
+    }
+
+    @Test func ordsUrlCanBeGivenToAdd() throws {
+        let h = try Harness()
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ALICE --ords-url https://given/ords") == 0)
+        let meta = Meta.decode(PrincipalMeta.self, try h.store.attributes(service: "road/road-kit/dev/principal", account: "ALICE")?.generic)
+        #expect(meta?.ords_url == "https://given/ords")
     }
 
     @Test func scriptFailureRestores() throws {
         let h = try Harness()
         h.runner.principalScriptStatus = 1
-        #expect(h.run("set road/road-kit/dev/principal/ADMIN") == 5)
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 5)
         #expect(h.store.items.isEmpty)
     }
 
     @Test func refusesTheWrongProjectAndUnignoredLocalEnv() throws {
         let h = try Harness()
-        #expect(h.run("set road/road-cal/dev/principal/ADMIN") == 2)
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN --project \(h.root.path)") == 2)
         try "x=1\n".write(to: h.project.appendingPathComponent("config/local.env"), atomically: true, encoding: .utf8)
         h.ignored = false
-        #expect(h.run("set road/road-kit/dev/principal/ADMIN") == 5)
-        // The principal already has the new password, so the entry is kept.
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ADMIN") == 5)
         #expect(try h.store.read(service: "road/road-kit/dev/principal", account: "ADMIN") != nil)
     }
 
     @Test func missingLocalEnvIsNotAFailure() throws {
         let h = try Harness()
-        #expect(h.run("set road/road-kit/dev/principal/ALICE") == 0)
-        #expect(h.out.last?.contains("No config/local.env") == true)
-        #expect(h.run("check road/road-kit/dev/principal/ALICE") == 5)   // FakeLogin accepts nothing
+        #expect(h.run("add --app road-kit --env dev --kind principal --name ALICE") == 0)
+        #expect(h.err.last?.contains("No config/local.env") == true)
+        #expect(h.run("check road/road-kit/dev/principal/ALICE") == 5)
     }
 }
