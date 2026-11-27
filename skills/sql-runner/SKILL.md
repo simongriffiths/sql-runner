@@ -60,7 +60,8 @@ When a script or test needs a dev or test password, get it with `road-secrets ge
 - Never ask the user for one.
 - Never create or change an entry for `prod`.
 - Always call the tool as `road-secrets`, never by its full path.
-- Always write keys exactly as `road-secrets list` prints them.
+- Always write keys exactly as `road-secrets list` prints them. `set`, `sync`, `get`, `copy`, `check` and `delete` take only the key.
+- To create an entry, use `road-secrets add --app <app> --env <env> --kind <db|principal> --name <NAME>` with the kind's details. Do not guess `--kind`. Pass a current password only through standard input, never as an argument. If you do not have it, use `--via-admin` or ask the user to run `add` themselves.
 - Always write `--env` as the first argument to `bin/run-sql.sh`. The user's approval rules for ADMIN work depend on it.
 
 If `road-secrets` is not installed, tell the user about `bin/install-road-secrets.sh` in the sql-runner repository. Do not install it into a project.

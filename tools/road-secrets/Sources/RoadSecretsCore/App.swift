@@ -227,6 +227,11 @@ public final class App {
             guard wrong.isEmpty else { throw RoadError(.usage, "--project and --ords-url are only for principal keys") }
             let atlas = try loadAtlas()
             let target = try resolveDb(key, a.values, atlas: atlas)
+            // Refuse before reading anything from standard input.
+            if key.isAdmin && key.app != target.db {
+                throw RoadError(.usage, "an ADMIN key must use the database name as its app: --app \(target.db)")
+            }
+            try ProdGuard.check(key: key, db: target.db, connections: [target.connection], atlas: atlas)
             var old: String?
             let viaAdmin = a.flags.contains("via-admin")
             if !viaAdmin {
@@ -266,7 +271,7 @@ public final class App {
                           label: "\(key.label) (previous)", comment: attributes.comment, generic: attributes.generic)
     }
 
-    /// Puts the entry back as it was before `set` began (Section 7.3, step 8).
+    /// Puts the entry back as it was before `set` began (Section 7.4, step 8).
     func restore(_ key: Key, value: String?, attributes: ItemAttributes?) {
         if let value, let attributes {
             try? d.store.write(service: key.service, account: key.account, password: value,
@@ -337,7 +342,7 @@ public final class App {
         let db: String
     }
 
-    /// Section 7.3, step 1.
+    /// Section 7.4, step 1.
     func resolveDb(_ key: Key, _ values: [String: String]?, atlas: Atlas) throws -> DbTarget {
         let existing = try d.store.attributes(service: key.service, account: key.account)
         let meta = Meta.decode(DbMeta.self, existing?.generic)
@@ -365,7 +370,7 @@ public final class App {
         return DbTarget(meta: meta, connection: connection, wallet: wallet, tns: tns, db: db)
     }
 
-    /// Section 7.3, step 4. Applies the production guard to what it finds.
+    /// Section 7.4, step 4. Applies the production guard to what it finds.
     func discover(_ key: Key, db: String, atlas: Atlas, sql: SQLcl) throws -> [SavedConnection] {
         let found = Connmgr.matching(try sql.discover(), user: key.name, db: db)
         try ProdGuard.check(key: key, db: db, connections: found.map(\.name), atlas: atlas)
@@ -382,7 +387,7 @@ public final class App {
                      interactive: d.terminal.isInteractive, old: old, existing: attributes)
     }
 
-    /// Section 7.3, steps 2 to 10. `old` is the current password, unless `viaAdmin`.
+    /// Section 7.4, steps 2 to 10. `old` is the current password, unless `viaAdmin`.
     /// `existing` is the current entry, or nil when `add` creates it.
     func changeDb(_ key: Key, target: DbTarget, atlas: Atlas, viaAdmin: Bool, yes: Bool, interactive: Bool,
                   old: String?, existing: ItemAttributes?) throws {
@@ -580,7 +585,7 @@ public final class App {
                             ords: meta?.ords_url, existing: attributes)
     }
 
-    /// Section 7.4. `existing` is the current entry, or nil when `add` creates it.
+    /// Section 7.5. `existing` is the current entry, or nil when `add` creates it.
     func changePrincipal(_ key: Key, project: URL, ords givenOrds: String?, existing: ItemAttributes?) throws {
         // Step 1.
         guard project.lastPathComponent == key.app else {
@@ -624,7 +629,7 @@ public final class App {
         d.err("road-secrets: set \(key). \(note)")
     }
 
-    /// Section 7.11. Returns a one-line description of what happened.
+    /// Section 7.12. Returns a one-line description of what happened.
     func updateLocalEnv(_ key: Key, project: URL, password: String) throws -> String {
         let outcome: LocalEnv.Outcome
         do {

@@ -14,6 +14,7 @@ smoke-history:
 	test/run-offline-tests.sh
 
 # The Command Line Tools toolchain sometimes fails a build with "plugin for module TestingMacros not
-# found". A second build succeeds, so build once more before running the tests.
+# found", occasionally twice in a row. A later build succeeds, so try up to three times. --skip-build
+# then runs the tests that were just built, never a stale copy.
 road-secrets-test:
-	cd tools/road-secrets && (swift build --build-tests >/dev/null 2>&1 || swift build --build-tests) && swift test --skip-build
+	cd tools/road-secrets && (swift build --build-tests >/dev/null 2>&1 || swift build --build-tests >/dev/null 2>&1 || swift build --build-tests) && swift test --skip-build

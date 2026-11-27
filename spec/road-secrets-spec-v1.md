@@ -1,7 +1,7 @@
 # road-secrets Specification
 
-**Version:** 1.5 (draft)
-**Date:** 2026-11-23
+**Version:** 1.6 (draft)
+**Date:** 2026-11-27
 **Repository:** `sql-runner`
 **Status:** Ready for build. Spikes S1 to S3 are done (Section 12). Open questions are in Section 16.
 
@@ -95,7 +95,7 @@ road/<app>/<env>/<kind>/<NAME>
 | `kind` | `db` or `principal` | `principal` |
 | `NAME` | The database user name or principal subject. Uppercase letters, digits and `_ . @ $ # -`. | `ALICE` |
 
-A key that breaks any rule is rejected with exit 2. In particular, lowercase letters in `NAME` are rejected, not converted. Each entry therefore has exactly one spelling, which the approval rules in Section 11 rely on.
+A key that breaks any rule is rejected with exit 2, except that a key whose `env` is `prod` is refused with exit 6 as soon as it is read (Section 5.7). In particular, lowercase letters in `NAME` are rejected, not converted. Each entry therefore has exactly one spelling, which the approval rules in Section 11 rely on.
 
 Examples:
 
@@ -139,7 +139,7 @@ For a `principal` entry:
 | Field | Meaning |
 |---|---|
 | `db` | The database name, derived from `tns` (Section 5.6) |
-| `sqlcl_connections` | Every SQLcl saved connection that logs in as this user on this database, found by discovery (Section 7.3, step 4). Recorded for information. Discovery runs again on every `set`, `sync` and `check`. |
+| `sqlcl_connections` | Every SQLcl saved connection that logs in as this user on this database, found by discovery (Section 7.4, step 4). Recorded for information. Discovery runs again on every `set`, `sync` and `check`. |
 | `wallet` | The wallet for that database: preferably the wallet zip, or else a wallet directory. Every SQLcl connect the tool makes with an explicit user and password uses `conn -cloudconfig` with this wallet (Section 8.1). |
 | `tns` | The TNS name (the alias in the wallet's `tnsnames.ora`) |
 | `project` | The app's project root, where `config/local.env` lives |
@@ -157,7 +157,7 @@ The previous item is deleted once the change succeeds. `list` hides previous ite
 
 ### 5.5 One ADMIN entry per database
 
-ADMIN belongs to a database, not to an app. An ADMIN key therefore uses the database name as its `app` segment, as in `road/roadkitdb/dev/db/ADMIN`. `set` refuses an ADMIN key whose `app` segment is not the database name derived from its TNS name (exit 2). Each database can thus have at most one ADMIN entry, and `--via-admin` (Section 7.3) finds it without ambiguity.
+ADMIN belongs to a database, not to an app. An ADMIN key therefore uses the database name as its `app` segment, as in `road/roadkitdb/dev/db/ADMIN`. `add` refuses an ADMIN key whose `app` segment is not the database name derived from its TNS name (exit 2). Each database can thus have at most one ADMIN entry, and `--via-admin` (Section 7.4) finds it without ambiguity.
 
 ### 5.6 Database names
 
@@ -212,13 +212,14 @@ With the list sizes above there are about 2 billion possible passwords, or about
 
 ## 7. Commands
 
-All commands take a key as their main argument. Any line printed by `list` can be pasted into another command.
+Every everyday command (`set`, `sync`, `get`, `copy`, `check` and `delete`) takes exactly one argument: the key, written exactly as `list` prints it. Any line printed by `list` can be pasted after one of these commands. They work from any folder, and an existing key needs no other options. A new entry is created with `add`, which takes the key's parts as named arguments (Section 7.3).
 
 | Command | Purpose |
 |---|---|
 | `init` | Check that the tool can use the login keychain |
 | `list [prefix] [--all]` | List keys. Never shows passwords. |
-| `set <key> [options]` | Generate a new password and apply it everywhere |
+| `add --app <app> --env <env> --kind <db\|principal> --name <NAME> [details]` | Create a new entry and set its first password |
+| `set <key>` | Generate a new password for an existing entry and apply it everywhere |
 | `sync <key>` | Push the Keychain password into every copy: SQLcl for `db`, `config/local.env` for `principal` |
 | `get <key>` | Print the password to standard output |
 | `copy <key>` | Put the password on the clipboard |
@@ -241,64 +242,95 @@ road/road-cal/dev/db/ROAD_CAL_SCHEMA	2026-11-21	road-cal dev db ROAD_CAL_SCHEMA
 
 The fields are key, date set and label, separated by tabs. A prefix narrows the output. For example, `list road/road-cal/dev` shows only road-cal's dev entries. `--all` also shows previous items, marked `(previous)`.
 
-### 7.3 `set` for a `db` key
+### 7.3 `add`
 
-Options:
+`add` creates an entry that does not exist yet, then sets its first password. It never asks a question, so it can run unattended.
 
-- `--connection <name>`, `--wallet <path>` and `--tns <name>`: one SQLcl saved connection that logs in as the user, the wallet (a zip, or a directory) and the TNS name. All three are required the first time a key is set. On later runs they are taken from the entry's metadata.
-- `--via-admin`: change the password as ADMIN on the same database (see step 6).
+Arguments:
+
+- `--app`, `--env`, `--kind` and `--name`: the key's parts. All four are required. `--kind` must be `db` or `principal`, and the tool never guesses it. The parts are checked by the rules in Section 5.1. A lowercase `NAME` is rejected (exit 2), and `env` `prod` is refused (exit 6).
+- For a `db` key, `--connection <name>`, `--wallet <zip|dir>` and `--tns <name>` are all required. They name one SQLcl saved connection that logs in as the user, the wallet and the TNS name. Optional: `--via-admin` (Section 7.4, step 7) and `--yes` (Section 7.4, step 4).
+- For a `principal` key, these are optional: `--project <path>` (Section 7.5) and `--ords-url <url>`. If `--ords-url` is absent, the tool derives the URL from road-atlas: the `env` line for the key's app and environment names a database, and that database's `host` line gives `<host>/ords`. If road-atlas has no host for it, the URL is left unset.
+
+Options that belong to the other kind are refused (exit 2).
+
+Steps:
+
+1. Build the key from the parts and validate it (Section 5.1).
+2. If an entry for the key already exists, exit 2 with a message that points to `set <key>`.
+3. **For a `db` key:**
+   - Without `--via-admin`, read the user's current password from standard input. Print no prompt, and turn echo off when standard input is a terminal, so that the password can be piped in. If standard input is empty, exit 2 with a message suggesting `--via-admin`. This is also how the ADMIN entry for a database is first adopted.
+   - Then follow Section 7.4 from step 1, using the details given.
+4. **For a `principal` key:** follow Section 7.5 from step 1.
+5. On success, print the key on standard output, as `list` would print it. Progress and warnings go to standard error.
+
+### 7.4 `set` for a `db` key
+
+`set <key>` takes only the key. The connection, wallet and TNS name come from the entry's metadata. If there is no entry, exit 3 with a message that points to `add`.
+
+Options, for an existing key:
+
+- `--via-admin`: change the password as ADMIN on the same database (step 7). Use it when the stored password no longer works.
 - `--yes`: proceed without confirmation when more than one saved connection will be re-saved (step 4).
 
 Steps:
 
-1. **Resolve the connection.** Use the options, or else the entry's metadata. If neither exists, exit 2 with a message listing the missing options. Check that the wallet (a zip or a directory) exists and that its `tnsnames.ora` contains the TNS name. Derive the database name (Section 5.6).
+1. **Resolve the connection.** For `set`, take it from the entry's metadata. For `add`, take it from the arguments. Check that the wallet (a zip or a directory) exists and that its `tnsnames.ora` contains the TNS name. Derive the database name (Section 5.6).
 2. **Read the connection details.** Run `connmgr show <name>` in SQLcl and parse the user name and connect string. The login user is the part before any `[`, so `LIVEHUB_DEPLOY[AV_ACC]` logs in as `LIVEHUB_DEPLOY`. SQLcl keeps user names as they were typed, often in lowercase (`livehub_deploy[av_acc]`), so compare ignoring case. If the login user does not match the key's `NAME`, exit 2.
 3. **Apply the production guard** (Section 5.7) and, for an ADMIN key, the one-per-database rule (Section 5.5).
-4. **Discover every connection that logs in as this user.** Run `connmgr list -flat`, then `connmgr show` for each saved connection, in one SQLcl session (Section 8.2). Keep every connection whose login user equals `NAME`, ignoring case, and whose connect string resolves to the same database name, whatever its service suffix or proxy schema. Apply the production guard to the result. Print the number of connections and their names. If there is more than one, ask for confirmation at the terminal unless `--yes` is given. If standard input is not a terminal and `--yes` is absent, exit 2.
-5. **Adopt the account if needed.** If `--via-admin` is absent and no current entry exists, the account has not been adopted yet. Ask for its current password at the terminal with echo off and use that as the old password. If standard input is not a terminal, exit 2 with a message suggesting `--via-admin`. This is also how the ADMIN entry for a database is first adopted.
+4. **Discover every connection that logs in as this user.** Run `connmgr list -flat`, then `connmgr show` for each saved connection, in one SQLcl session (Section 8.2). Keep every connection whose login user equals `NAME`, ignoring case, and whose connect string resolves to the same database name, whatever its service suffix or proxy schema. Apply the production guard to the result. Print the number of connections and their names. If there is more than one and `--yes` is absent:
+   - `set` asks for confirmation when standard input is a terminal, and otherwise exits 2.
+   - `add` never asks, so it exits 2.
+5. **Find the old password.** Without `--via-admin`, `set` uses the entry's current password, and `add` uses the one read from standard input.
 6. **Store the new value first.** Generate a password. Copy the current entry (if any) to the previous item. Write the new password to the current entry.
 7. **Change the password in the database.** Drive SQLcl through standard input, with echo off:
-   - **Default (self-change):** connect with `conn -name <connection>`, then run `alter user <NAME> identified by "<new>" replace "<old>";`. The old password comes from the previous item, or from the terminal during adoption.
-   - **With `--via-admin`:** find the ADMIN entry for the key's database (Section 5.5). If there is none, exit 2 with a message saying the ADMIN entry for this database must be adopted first, or that this database serves production and has none. Connect as ADMIN to the entry's TNS name with `conn -cloudconfig`, using the ADMIN entry's wallet (Section 8.1). Then run `alter user <NAME> identified by "<new>";`. This is how an account whose password has been forgotten is adopted. It works because ADMIN does not need the old password. `--via-admin` cannot be used on the ADMIN entry itself.
+   - **Default (self-change):** connect directly as the user with the old password: `conn -cloudconfig <zip> <NAME>/"<old>"@<tns>` (Section 8.1). Then run `alter user <NAME> identified by "<new>" replace "<old>";`. The tool does not use `conn -name <connection>` here, because a proxy connection would log in as its proxy schema, not as `NAME`.
+   - **With `--via-admin`:** find the ADMIN entry for the key's database (Section 5.5). If there is none, exit 2 with a message saying the ADMIN entry for this database must be added first, or that this database serves production and has none. Connect as ADMIN to the entry's TNS name with `conn -cloudconfig`, using the ADMIN entry's wallet (Section 8.1). Then run `alter user <NAME> identified by "<new>";`. This is how an account whose password has been forgotten is adopted. It works because ADMIN does not need the old password. `--via-admin` cannot be used on the ADMIN entry itself.
 8. **On failure:** restore the current entry from the previous item, or delete it if there was none. Show the scrubbed SQLcl error and exit 5.
 9. **Re-save every discovered connection** with the new password, in one SQLcl session, keeping its user, proxy schema and TNS name. Use the method in Section 8.1, then run `connmgr test` on each. If any re-save fails, keep the Keychain entry, because the database already has the new password. List the connections that failed, tell the user to run `sync` and exit 5.
 10. **Finish.** Delete the previous item, update the metadata and print a one-line success message naming how many connections were re-saved. Never print the password.
 
-### 7.4 `set` for a `principal` key
+### 7.5 `set` for a `principal` key
 
-Options:
+`set <key>` takes only the key. If there is no entry, exit 3 with a message that points to `add`.
 
-- `--project <path>`: the app's project root. It defaults to the entry's metadata, and then to the root of the git repository containing the current directory.
-- `--ords-url <url>`: the ORDS base URL for the app and environment. Optional. If absent, the tool derives it from road-atlas: the `env` line for the key's app and environment names a database, and that database's `host` line gives `<host>/ords`. If road-atlas has no host for it, the URL is left unset. It is stored in the metadata and used by `check`.
+**The project folder.** `set`, `sync` and `check` for a principal key find the app's project root in this order, so that they work from any folder:
+
+1. `--project <path>`, if given. This is an optional override, and the path is stored for next time.
+2. The `project` stored in the entry's metadata.
+3. `$ROAD_PROJECTS/<app>`, if `ROAD_PROJECTS` is set.
+4. `~/Projects/<app>`.
+
+`add` uses the same order, without step 2. The ORDS URL comes from the metadata.
 
 Steps:
 
-1. Confirm that the project root's directory name matches the key's `app`, and that `bin/set-principal-password.sh` exists there. Otherwise exit 2.
+1. Confirm that the project root's directory name matches the key's `app`, and that `bin/set-principal-password.sh` exists there. Otherwise exit 2, naming the folder tried and suggesting `--project`.
 2. Apply the production guard's `env` rule (Section 5.7).
 3. Print a one-line warning that every live session for this principal will end (Section 3, item 10).
 4. Generate a password. Copy the current entry (if any) to the previous item. Write the new password to the current entry.
 5. Run `bin/set-principal-password.sh --env <env> --subject <NAME>` from the project root. Write the password to its standard input twice, each followed by a newline. The script reads a password and then a confirmation. Spike S3 confirmed that this works when standard input is not a terminal.
 6. If the script exits non-zero, restore the current entry from the previous item (or delete it), show the script's output and exit 5.
-7. **Update `config/local.env`** (Section 7.11).
+7. **Update `config/local.env`** (Section 7.12).
 8. Delete the previous item and print a one-line success message.
 
-### 7.5 `sync <key>`
+### 7.6 `sync <key>`
 
-For a `db` key, it discovers the connections again (Section 7.3, step 4), re-saves each with the Keychain password using the method in Section 8.1, then runs `connmgr test` on each and reports any that fail.
+For a `db` key, it discovers the connections again (Section 7.4, step 4), re-saves each with the Keychain password using the method in Section 8.1, then runs `connmgr test` on each and reports any that fail.
 
-For a `principal` key, it updates `config/local.env` (Section 7.11).
+For a `principal` key, it updates `config/local.env` (Section 7.12), in the project folder found as in Section 7.5.
 
 Use `sync` on a new Mac, after reinstalling SQLcl, after adding a saved connection for a user the tool already manages, or after a `set` that ended with a copy failing.
 
-### 7.6 `get <key>`
+### 7.7 `get <key>`
 
 Prints the password followed by a newline, and nothing else, to standard output. This is for scripts and test runners. Exit 3 if the key does not exist.
 
-### 7.7 `copy <key>`
+### 7.8 `copy <key>`
 
 Puts the password on the clipboard using `NSPasteboard`. Prints `copied <key>` to standard error. It is useful only at the Mac itself, or from a device sharing its clipboard through the same Apple ID.
 
-### 7.8 `check <key>`
+### 7.9 `check <key>`
 
 **For `db` keys,** it runs two checks and reports each one:
 
@@ -315,13 +347,13 @@ Puts the password on the clipboard using `NSPasteboard`. Prints `copied <key>` t
    - Use `URLSession`. The password then never appears in an argument list.
 
    A 200 response containing `access_token` passes. A 404 means the scaffold login is not deployed. That happens when the app is configured for external OIDC (an outside identity provider such as Auth0). Report that and exit 5. If the entry has no `ords_url`, report "skipped: no ORDS URL stored for this key".
-2. If `config/local.env` names this principal (Section 7.11), confirm that its `ROAD_TEST_PASSWORD` equals the Keychain password, without printing either.
+2. If `config/local.env` names this principal (Section 7.12), confirm that its `ROAD_TEST_PASSWORD` equals the Keychain password, without printing either.
 
-### 7.9 `delete <key> [--yes]`
+### 7.10 `delete <key> [--yes]`
 
 Removes the entry and any previous item. Asks for confirmation unless `--yes` is given. It changes nothing in the database, in SQLcl or in `config/local.env`.
 
-### 7.10 Exit codes
+### 7.11 Exit codes
 
 | Code | Meaning |
 |---|---|
@@ -332,7 +364,7 @@ Removes the entry and any previous item. Asks for confirmation unless `--yes` is
 | 5 | Database, SQLcl, endpoint or `config/local.env` error |
 | 6 | Refused by the production guard, including road-atlas unreadable |
 
-### 7.11 Updating `config/local.env`
+### 7.12 Updating `config/local.env`
 
 `config/local.env` names the test principal in `ROAD_TEST_USERNAME`, which defaults to `ADMIN` when unset or commented out.
 
@@ -375,7 +407,7 @@ conn -cloudconfig <zip> -save <name> -savepwd -replace <login>/"<password>"@<tns
 - A re-save rewrites the connection from these arguments. Re-save the connections for one database at a time, with that database's wallet.
 - If the entry's `wallet` is a directory, zip it at the start of the run. Put the zip in a new private temporary directory (mode 0700, file mode 0600) outside every repository, and delete it on exit.
 - After re-saving, run `connmgr test` on each connection in one session.
-- Connections saved by name (`conn -name <connection>`, as in the self-change in Section 7.3, step 7) keep using their own stored wallet.
+- A saved connection used by name (`conn -name <connection>`, or `connmgr test`) keeps using its own stored wallet.
 
 Measured in spike S2 on roadkitdb: re-saving 17 proxy connections in one session took 7.6 seconds, or about 0.44 seconds each. `connmgr test` on all 17 took 4.7 seconds. At that rate, re-saving quoratedb's 145 `LIVEHUB_DEPLOY` connections takes about 64 seconds.
 
@@ -429,7 +461,7 @@ The script must pass the repository's `make lint` (`bash -n` and `shellcheck`).
 ## 11. Documentation and skill changes
 
 - **sql-runner `README.md`:** add a short "Passwords" section covering installation and the commands.
-- **`skills/sql-runner/SKILL.md`:** add a rule. When a script or test needs a dev or test password, get it with `road-secrets get <key>` and pass it on through standard input or an environment variable. Never echo it, never write it to a file in a repository, and never ask the user for it. Never create or change an entry for `prod`. Always call the tool as `road-secrets`, never by its full path, and always write keys exactly as `list` prints them.
+- **`skills/sql-runner/SKILL.md`:** add a rule. When a script or test needs a dev or test password, get it with `road-secrets get <key>` and pass it on through standard input or an environment variable. Never echo it, never write it to a file in a repository, and never ask the user for it. Never create or change an entry for `prod`. Always call the tool as `road-secrets`, never by its full path, and always write keys exactly as `list` prints them. Create a new entry with `add`, never by guessing a key for `set`.
 - **Approval gate for ADMIN work:** document in the README that the user should add these rules to the `ask` list in `~/.claude/settings.json`. That file applies to every project, and the Code tab of the desktop app reads it too.
 
   ```json
@@ -476,22 +508,23 @@ The spikes were run on 2026-11-23. The full results are in `docs/journal/2026-11
 
 ## 13. Tests
 
-- **Unit tests (`swift test`):** key parsing and validation, the rejection of lowercase names, the `prod` refusal, ADMIN key naming, database-name derivation, the production guard against a fixture `environments.conf` and `databases.conf` (including a missing file), login-user parsing of `USER[SCHEMA]`, Keychain attribute mapping, password generation (run 10,000 generations and check length, character classes, the three-digit number and the user-name rule), word-list validation (letters only, 4 to 8 letters, no duplicates), `config/local.env` rewriting against fixtures (line present, line absent, commented `ROAD_TEST_USERNAME`, other principal) and output scrubbing.
+- **Unit tests (`swift test`):** key parsing and validation, `add`'s argument validation, `add` on an existing key, `set` on a missing key, project-folder derivation, the rejection of lowercase names, the `prod` refusal, ADMIN key naming, database-name derivation, the production guard against a fixture `environments.conf` and `databases.conf` (including a missing file), login-user parsing of `USER[SCHEMA]`, Keychain attribute mapping, password generation (run 10,000 generations and check length, character classes, the three-digit number and the user-name rule), word-list validation (letters only, 4 to 8 letters, no duplicates), `config/local.env` rewriting against fixtures (line present, line absent, commented `ROAD_TEST_USERNAME`, other principal) and output scrubbing.
 - **Integration checklist (manual, recorded in `docs/journal/`):**
   1. `init` succeeds, and a second `init` succeeds too. Neither leaves an item behind.
-  2. Adopt roadkitdb's ADMIN by typing its current password, rotate it, then run `check`. All succeed.
-  3. `set` for quoratedb's ADMIN exits 6.
-  4. `set --via-admin` adopts a dev database user on roadkitdb. `set` by typing the current password adopts a dev database user on quoratedb. `check` passes both checks for each.
+  2. `add` roadkitdb's ADMIN, piping its current password on standard input. Rotate it with `set <key>`, then run `check`. All succeed.
+  3. `add` for quoratedb's ADMIN exits 6.
+  4. `add --via-admin` adopts a dev database user on roadkitdb. `add` with the current password on standard input adopts a dev database user on quoratedb. `check` passes both checks for each.
   5. A second `set` (self-change) rotates a password, then `check` passes.
   6. `set --via-admin` against a database whose ADMIN entry holds a wrong password fails, and the Keychain entry is restored.
-  7. `set --yes` for `LIVEHUB_DEPLOY` on roadkitdb re-saves all 17 connections, and `check` reports all 17 passing.
+  6a. `add` for a key that exists exits 2. `set`, `sync` and `check` for a key that does not exist exit 3. `add` for a db user with empty standard input and no `--via-admin` exits 2.
+  7. `add --via-admin --yes` for `LIVEHUB_DEPLOY` on roadkitdb re-saves all 17 connections, and `check` reports all 17 passing.
   8. `set` for a user with several connections, with standard input not a terminal and no `--yes`, exits 2 and changes nothing.
   9. `sync` after deleting and recreating a SQLcl connection restores it.
-  10. `set` for a principal in road-kit updates `config/local.env`, `check` passes against the dev ORDS endpoint, and `bin/get-test-token.sh` then works.
+  10. `add`, then `set <key>`, for a principal in road-kit, run from a folder outside road-kit, updates `config/local.env`, `check` passes against the dev ORDS endpoint, and `bin/get-test-token.sh` then works.
   11. `get` from a script in a Claude Code session runs with no prompt.
   12. After a rebuild, the first `get` of an item raises one "Always Allow" prompt, which asks for nothing the user does not know. After Always Allow, a second `get` raises none.
   13. `list`, `copy` and `delete` behave as specified.
-  14. `set` for any key with environment `prod` exits 6, and `set` for the schema of a prod `env` line exits 6.
+  14. `add` for any key with environment `prod` exits 6, and `add` for the schema of a prod `env` line exits 6.
   15. `ps` during `set` shows no password in any argument list.
 
 ---
@@ -515,8 +548,8 @@ The spikes were run on 2026-11-23. The full results are in `docs/journal/2026-11
 
 These are not part of the build.
 
-1. **Adopt ADMIN only where the database serves no production.** Today that is roadkitdb. Run `set road/roadkitdb/dev/db/ADMIN` with the ADMIN connection's options and type the current ADMIN password once. If it has been forgotten, reset it in the OCI console first. Other users on that database can then be adopted with `--via-admin`.
-2. **On quoratedb, adopt users by typing their current password.** Its ADMIN is never stored, so `--via-admin` is not available there. For a user whose password has been forgotten, reset it as ADMIN by hand first.
+1. **Adopt ADMIN only where the database serves no production.** Today that is roadkitdb. Run `add --app roadkitdb --env dev --kind db --name ADMIN` with the ADMIN connection's `--connection`, `--wallet` and `--tns`, and give the current ADMIN password once on standard input. If it has been forgotten, reset it in the OCI console first. Other users on that database can then be added with `--via-admin`.
+2. **On quoratedb, add users by giving their current password on standard input.** Its ADMIN is never stored, so `--via-admin` is not available there. For a user whose password has been forgotten, reset it as ADMIN by hand first.
 3. **Production stays out.** Production ADMIN and application passwords are never stored by this tool.
 4. **Rotate a principal when no one is relying on a live session for it.** Every session for it ends.
 
@@ -526,9 +559,19 @@ These are not part of the build.
 
 1. **Does anything else hold `LIVEHUB_DEPLOY`'s password?** Resolved 2026-11-23: ai-live-hub may keep a copy in its `config/local.env`. That copy is superseded by the Keychain entry. Before adopting `LIVEHUB_DEPLOY`, check ai-live-hub's `config/local.env`, and after adopting it, have ai-live-hub read the password with `road-secrets get` instead.
 2. **Should quoratedb's prod environments move off it?** Section 3, item 6 follows road-atlas as it stands. If road-blogger and road-beacon `prod` move to their own database, quoratedb's ADMIN becomes manageable with no change to the tool.
-3. **Open item for road-kit, not this tool.** road-kit's `bin/get-test-token.sh` puts the password in curl's `-d` argument, which `ps` can show while curl runs. road-kit should send the body on standard input instead, with `--data @-`. This tool's own `check` uses `URLSession` and is not affected (Section 7.8).
+3. **Open item for road-kit, not this tool.** road-kit's `bin/get-test-token.sh` puts the password in curl's `-d` argument, which `ps` can show while curl runs. road-kit should send the body on standard input instead, with `--data @-`. This tool's own `check` uses `URLSession` and is not affected (Section 7.9).
 
 ---
+
+## Changes in 1.6
+
+- `set`, `sync`, `get`, `copy`, `check` and `delete` take exactly one argument, the key as `list` prints it, and work from any folder. An existing key needs no other options (Section 7).
+- A new `add` command creates an entry from named parts: `--app`, `--env`, `--kind` (required, never guessed) and `--name`, with the kind's first-time details. It applies every existing rule, does the first set, never asks a question and prints the key (Section 7.3).
+- `add` refuses a key that already exists (exit 2) and points to `set`. `set`, `sync` and `check` on a missing key exit 3 and point to `add` (Sections 7.3 to 7.5).
+- The first-time options `--connection`, `--wallet`, `--tns` and `--ords-url` move from `set` to `add`. `set` keeps `--via-admin` and `--yes` for db keys, and `--project` as an optional override for principal keys (Sections 7.4, 7.5).
+- Adoption no longer prompts. `add` reads a db user's current password from standard input, with no prompt and no echo. Empty standard input exits 2 and suggests `--via-admin` (Section 7.3).
+- The project folder for a principal key is the `--project` override, else the stored project, else `$ROAD_PROJECTS/<app>`, else `~/Projects/<app>`. It no longer comes from the current directory's git repository (Section 7.5).
+- These two points record how the build already works. A self-change logs in directly as the user with `conn -cloudconfig`, not with `conn -name`, because a proxy connection would log in as its proxy schema (Section 7.4, step 7). A key with `env` `prod` is refused with exit 6 as soon as it is read (Section 5.1).
 
 ## Changes in 1.5
 

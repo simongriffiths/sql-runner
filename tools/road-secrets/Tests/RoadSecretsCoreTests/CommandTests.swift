@@ -188,6 +188,13 @@ import Testing
         #expect(h.runner.passwords["ADMIN"] == "Admin.Pass.001")
     }
 
+    @Test func refusalsComeBeforeReadingStandardInput() throws {
+        let h = try harness()
+        #expect(h.run("add --app quoratedb --env dev --kind db --name ADMIN \(details(h, "quorate_admin", db: "quoratedb", tns: "quoratedb_high"))") == 6)
+        #expect(h.run("add --app road-kit --env dev --kind db --name ADMIN \(details(h, "roadkit_admin"))") == 2)
+        #expect(h.terminal.stdinReads == 0)
+    }
+
     @Test func unreadableAtlasRefuses() throws {
         let h = try harness()
         h.terminal.stdin = "Admin.Pass.001"

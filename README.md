@@ -204,17 +204,41 @@ road/roadkitdb/dev/db/ADMIN          ADMIN of a database that serves no producti
 road/livehub/dev/db/LIVEHUB_DEPLOY   a database user, with every saved connection that logs in as it
 ```
 
+Every everyday command takes one argument: the key, exactly as `list` prints it. The commands work from any folder.
+
 | Command | What it does |
 |---|---|
 | `road-secrets list [prefix] [--all]` | Lists keys. Never shows passwords. |
-| `road-secrets set <key> [options]` | Generates a new password and applies it everywhere |
+| `road-secrets add --app <app> --env <env> --kind <db\|principal> --name <NAME> [details]` | Creates a new entry and sets its first password |
+| `road-secrets set <key>` | Generates a new password and applies it everywhere |
 | `road-secrets sync <key>` | Pushes the Keychain password into every copy |
 | `road-secrets get <key>` | Prints the password, for scripts |
 | `road-secrets copy <key>` | Puts the password on the clipboard |
 | `road-secrets check <key>` | Proves the stored password works |
 | `road-secrets delete <key> [--yes]` | Removes the entry. Changes nothing else. |
 
-The first `set` for a database user needs `--connection <saved connection> --wallet <wallet zip or directory> --tns <TNS name>`. To adopt the user, either type its current password at the terminal, or use `--via-admin` once the database's ADMIN entry exists. `set` changes the password once and re-saves every saved connection that logs in as that user, including proxy logins. When there is more than one, it asks first, unless you pass `--yes`. Run it in a desktop session on the Mac, not over SSH.
+`add` never asks a question, and it prints the new key when it succeeds. `--kind` is required.
+
+To add a database user, give one saved connection that logs in as it, the wallet and the TNS name. Then do one of these:
+
+- Pipe in the user's current password. It is read from standard input with no prompt and no echo.
+- Use `--via-admin`, once the database's ADMIN entry exists.
+
+```bash
+pbpaste | road-secrets add --app roadkitdb --env dev --kind db --name ADMIN \
+  --connection roadkit_admin --wallet ~/wallets/roadkitdb.zip --tns roadkitdb_medium
+```
+
+```bash
+road-secrets add --app livehub --env dev --kind db --name LIVEHUB_DEPLOY --via-admin --yes \
+  --connection livehub_av_acc --wallet ~/wallets/roadkitdb.zip --tns roadkitdb_medium
+```
+
+The password changes once, and every saved connection that logs in as that user is re-saved, proxy logins included. When there is more than one, pass `--yes`. Later, `road-secrets set <key>` rotates it, with everything else taken from the entry. `set` asks before re-saving several connections when you are at a terminal. Otherwise it needs `--yes`. Run it in a desktop session on the Mac, not over SSH.
+
+To add a road-kit principal, use `road-secrets add --app road-kit --env dev --kind principal --name ADMIN`. The app's folder is `$ROAD_PROJECTS/<app>`, or `~/Projects/<app>` if `ROAD_PROJECTS` is unset. Pass `--project <path>` if it is elsewhere. The folder is stored, so later commands find it from anywhere.
+
+`set`, `sync` and `check` on a key that does not exist exit 3 and show the `add` command to use. `add` on a key that exists exits 2 and points to `set`.
 
 ### Approval gate for ADMIN work
 

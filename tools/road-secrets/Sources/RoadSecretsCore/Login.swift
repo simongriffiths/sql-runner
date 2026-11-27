@@ -1,6 +1,6 @@
 import Foundation
 
-/// The scaffold login call made by `check` for principals (spec Section 7.8).
+/// The scaffold login call made by `check` for principals (spec Section 7.9).
 public protocol LoginChecking {
     /// POSTs `{"username":..,"password":..}` and returns the status and body.
     func login(url: URL, username: String, password: String) throws -> (status: Int, body: Data)

@@ -1,6 +1,6 @@
 import Foundation
 
-/// `config/local.env` handling (spec Section 7.11).
+/// `config/local.env` handling (spec Section 7.12).
 public enum LocalEnv {
     public enum Outcome: Equatable {
         case missing

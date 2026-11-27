@@ -1,6 +1,6 @@
 import Foundation
 
-/// Exit codes, spec Section 7.10.
+/// Exit codes, spec Section 7.11.
 public enum ExitCode: Int32 {
     case success = 0
     case usage = 2

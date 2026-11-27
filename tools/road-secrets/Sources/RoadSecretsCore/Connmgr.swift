@@ -76,7 +76,7 @@ public enum Connmgr {
     }
 
     /// Every connection that logs in as `user` on database `db`, whatever its service or proxy
-    /// schema (spec Section 7.3, step 4). User names are compared ignoring case.
+    /// schema (spec Section 7.4, step 4). User names are compared ignoring case.
     public static func matching(_ all: [SavedConnection], user: String, db: String) -> [SavedConnection] {
         all.filter { $0.logsIn(as: user) && $0.databaseName == db }
             .sorted { $0.name < $1.name }

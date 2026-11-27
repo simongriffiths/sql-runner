@@ -19,9 +19,10 @@ if ! command -v swift >/dev/null 2>&1 || ! swift --version >/dev/null 2>&1; then
 fi
 
 # 2. Build. The Command Line Tools toolchain sometimes fails a build with "plugin for module ...
-# not found"; a second attempt succeeds, so retry once before giving up.
+# not found", occasionally twice in a row; a later attempt succeeds, so try up to three times.
 echo "[INFO] Building road-secrets (swift build -c release)"
-if ! (cd "${PACKAGE_DIR}" && swift build -c release >/dev/null 2>&1); then
+if ! (cd "${PACKAGE_DIR}" && swift build -c release >/dev/null 2>&1) \
+  && ! (cd "${PACKAGE_DIR}" && swift build -c release >/dev/null 2>&1); then
   (cd "${PACKAGE_DIR}" && swift build -c release)
 fi
 BUILT="$(cd "${PACKAGE_DIR}" && swift build -c release --show-bin-path)/road-secrets"
